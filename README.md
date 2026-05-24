@@ -1,3 +1,5 @@
+I created this branch with the intention of enabling the app to search for books upon opening. However, I am just a person without any coding ability, relying solely on Claude's guidance. Unfortunately, some issues have arisen and further updates will not be provided. Furthermore, since I am unable to set privacy settings, I have no choice but to archive it
+
 # [English](English.md) [中文](README.md)
 
 [![icon_android](https://github.com/gedoor/gedoor.github.io/blob/master/static/img/legado/icon_android.png)](https://play.google.com/store/apps/details?id=io.legado.play.release)
