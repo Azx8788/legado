@@ -91,6 +91,15 @@ class App : Application() {
                 .enableLogger(BuildConfig.DEBUG || AppConfig.recordLog)
                 .setLogger(EventLogger())
             DefaultData.upVersion()
+            if (!getPrefBoolean("defaultBookSourceImported", false)) {
+                val json = assets.open("defaultData/bookSources.json")
+                    .bufferedReader().readText()
+                BookSource.fromJsonArray(json).getOrNull()?.let {
+                    appDb.bookSourceDao.insert(*it.toTypedArray())
+                }
+                defaultSharedPreferences.edit()
+                    .putBoolean("defaultBookSourceImported", true).apply()
+            }
             AppFreezeMonitor.init(this@App)
             DispatchersMonitor.init()
             URL.setURLStreamHandlerFactory(ObsoleteUrlFactory(okHttpClient))
