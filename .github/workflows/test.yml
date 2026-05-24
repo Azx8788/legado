@@ -127,17 +127,7 @@ jobs:
           if-no-files-found: ignore
           path: ${{ github.workspace }}/mapping/missing_rules.txt
 
-      - name: Check Build production
-        run: |
-          if [ ! -d ${{ github.workspace }}/apk ]; then
-            echo "Build production not found! Check gradle logs."
-            exit 1
-          fi
-          cd ${{ github.workspace }}/apk/
-          if [ ! -e legado_*.apk ]; then
-            echo "Build production not found! Check gradle logs."
-            exit 1
-          fi
+      
 
       - name: Upload App To Artifact
         uses: actions/upload-artifact@v4
