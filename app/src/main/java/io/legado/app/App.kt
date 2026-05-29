@@ -94,21 +94,18 @@ class App : Application() {
                 .setLogger(EventLogger())
             DefaultData.upVersion()
             if (!getPrefBoolean("defaultBookSourceImported", false)) {
-    val json = assets.open("defaultData/bookSources.json")
-        .bufferedReader()
-        .readText()
-
-    val type = object : TypeToken<List<BookSource>>() {}.type
-    val sources: List<BookSource> =
-        GSON.fromJson(json, type) ?: emptyList()
-
-    if (sources.isNotEmpty()) {
-        appDb.bookSourceDao.insert(*sources.toTypedArray())
-    }
-
-    defaultSharedPreferences.edit()
-        .putBoolean("defaultBookSourceImported", true)
-        .apply()
+                val json = assets.open("defaultData/bookSources.json")
+                    .bufferedReader()
+                    .readText()
+                val type = object : TypeToken<List<BookSource>>() {}.type
+                val sources: List<BookSource> =
+                    GSON.fromJson(json, type) ?: emptyList()
+                if (sources.isNotEmpty()) {
+                    appDb.bookSourceDao.insert(*sources.toTypedArray())
+                }
+                defaultSharedPreferences.edit()
+                    .putBoolean("defaultBookSourceImported", true)
+                    .apply()
             }
             AppFreezeMonitor.init(this@App)
             DispatchersMonitor.init()
