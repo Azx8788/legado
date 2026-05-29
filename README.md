@@ -1,5 +1,5 @@
-I created this branch with the intention of enabling the app to search for books upon opening. However, I am just a person without any coding ability, relying solely on Claude's guidance. Unfortunately, some issues have arisen and further updates will not be provided. Furthermore, since I am unable to set privacy settings, I have no choice but to archive it
-
+I created this project for this application, so that when it's opened, there are book sources available for use. However, I am not capable of any programming myself, so I can only rely on AI to help me complete it. Please forgive me
+我希望这个应用可以打开，就可以使用，原本的想法是为其内置书源，但我只是一个没有任何编程能力的普通人，所以我的操作都是由AI告诉我，我来完成的，有错误的地方请见谅
 # [English](English.md) [中文](README.md)
 
 [![icon_android](https://github.com/gedoor/gedoor.github.io/blob/master/static/img/legado/icon_android.png)](https://play.google.com/store/apps/details?id=io.legado.play.release)
