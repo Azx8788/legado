@@ -22,7 +22,7 @@ jobs:
           echo "version=$(date -d "8 hour" -u +3.%y.%m%d%H)" >> $GITHUB_OUTPUT
       - id: check
         run: |
-          if [ ! -z "${{ secrets.RELEASE_KEY_STORE }}" ]; then
+          if [ ! -z "${{ secrets.SIGNING_KEYSTORE }}" ]; then
             echo "sign=yes" >> $GITHUB_OUTPUT
           fi
           if [ ! -z "${{ secrets.SERVICE_ACCOUNT_JSON }}" ]; then
@@ -55,11 +55,11 @@ jobs:
           # not use this output
           # echo "KeyStore=yes" >> $GITHUB_OUTPUT
           echo -e "\n" >> gradle.properties
-          echo RELEASE_KEY_ALIAS='${{ secrets.RELEASE_KEY_ALIAS }}' >> gradle.properties
-          echo RELEASE_KEY_PASSWORD='${{ secrets.RELEASE_KEY_PASSWORD }}' >> gradle.properties
-          echo RELEASE_STORE_PASSWORD='${{ secrets.RELEASE_STORE_PASSWORD }}' >> gradle.properties
+          echo RELEASE_KEY_ALIAS='${{ secrets.SIGNING_KEY_ALIAS }}' >> gradle.properties
+          echo RELEASE_KEY_PASSWORD='${{ secrets.SIGNING_KEY_PASSWORD }}' >> gradle.properties
+          echo RELEASE_STORE_PASSWORD='${{ secrets.SIGNING_STORE_PASSWORD }}' >> gradle.properties
           echo RELEASE_STORE_FILE='./key.jks' >> gradle.properties
-          echo ${{ secrets.RELEASE_KEY_STORE }} | base64 --decode > $GITHUB_WORKSPACE/app/key.jks
+          echo ${{ secrets.SIGNING_KEYSTORE }} | base64 --decode > $GITHUB_WORKSPACE/app/key.jks
 
       - name: Unify Version Name
         run: |
