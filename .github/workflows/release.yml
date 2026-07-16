@@ -17,7 +17,6 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
     outputs:
       version: ${{ steps.set-ver.outputs.version }}
-      play: ${{ steps.check.outputs.play }}
       sign: ${{ steps.check.outputs.sign }}
     steps:
       - id: set-ver
@@ -28,22 +27,18 @@ jobs:
           if [ ! -z "${{ secrets.SIGNING_KEYSTORE }}" ]; then
             echo "sign=yes" >> $GITHUB_OUTPUT
           fi
-          if [ ! -z "${{ secrets.SERVICE_ACCOUNT_JSON }}" ]; then
-            echo "play=yes" >> $GITHUB_OUTPUT
-          fi
 
   build:
     needs: prepare
     if: ${{ needs.prepare.outputs.sign }}
     strategy:
       matrix:
-        product: [ app, google ]
+        product: [ app ]
       fail-fast: false
     runs-on: ubuntu-latest
     env:
       product: ${{ matrix.product }}
       VERSION: ${{ needs.prepare.outputs.version }}
-      play: ${{ needs.prepare.outputs.play }}
     steps:
       - uses: actions/checkout@v4
 
@@ -102,23 +97,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Prepare For GooglePlay
-        if: env.product == 'google' && env.play == 'yes'
-        run: |
-          mkdir -p ReleaseNotes
-          ln -s ${{ github.workspace }}/CHANGELOG.md ReleaseNotes/whatsnew-en-US
-          ln -s ${{ github.workspace }}/CHANGELOG.md ReleaseNotes/whatsnew-zh-CN
-
-      - name: Release To GooglePlay
-        if: env.product == 'google' && env.play == 'yes'
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          packageName: io.legado.play
-          releaseFiles: ${{ github.workspace }}/apk/legado_google_*.apk
-          track: production
-          whatsNewDirectory: ${{ github.workspace }}/ReleaseNotes
-
       - name: Push Assets To "release" Branch
         if: ${{ github.actor == 'gedoor' }}
         run: |
