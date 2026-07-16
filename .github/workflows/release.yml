@@ -37,6 +37,8 @@ jobs:
         product: [ app, google ]
       fail-fast: false
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       product: ${{ matrix.product }}
       VERSION: ${{ needs.prepare.outputs.version }}
