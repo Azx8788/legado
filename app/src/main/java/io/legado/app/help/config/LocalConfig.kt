@@ -111,6 +111,15 @@ by appCtx.getSharedPreferences("local", Context.MODE_PRIVATE) {
             putBoolean("bookInfoDeleteAlert", value)
         }
 
+    /**
+     * 用户是否已确认免责声明（仅首次启动时弹一次）
+     */
+    var disclaimerAccepted: Boolean
+        get() = getBoolean("disclaimerAccepted")
+        set(value) {
+            putBoolean("disclaimerAccepted", value)
+        }
+
     var deleteBookOriginal: Boolean
         get() = getBoolean("deleteBookOriginal")
         set(value) {
