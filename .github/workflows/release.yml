@@ -21,7 +21,7 @@ jobs:
     steps:
       - id: set-ver
         run: |
-          echo "version=$(date -d "8 hour" -u +3.%y.%m%d%H)" >> $GITHUB_OUTPUT
+          echo "version=4.0" >> $GITHUB_OUTPUT
       - id: check
         run: |
           if [ ! -z "${{ secrets.SIGNING_KEYSTORE }}" ]; then
