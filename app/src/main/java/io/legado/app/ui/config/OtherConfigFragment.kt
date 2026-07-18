@@ -26,6 +26,7 @@ import io.legado.app.model.CheckSource
 import io.legado.app.model.ImageProvider
 import io.legado.app.receiver.SharedReceiverActivity
 import io.legado.app.service.WebService
+import io.legado.app.ui.book.read.config.ClickActionConfigDialog
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.widget.number.NumberPickerDialog
 import io.legado.app.utils.LogUtils
@@ -156,6 +157,7 @@ class OtherConfigFragment : PreferenceFragment(),
 
             PreferKey.clearWebViewData -> clearWebViewData()
             "localPassword" -> alertLocalPassword()
+            "clickRegionalConfig" -> showDialogFragment<ClickActionConfigDialog>()
             PreferKey.shrinkDatabase -> shrinkDatabase()
         }
         return super.onPreferenceTreeClick(preference)

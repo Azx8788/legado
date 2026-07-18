@@ -60,6 +60,11 @@
         app:layout="@layout/view_preference_category">
 
         <io.legado.app.lib.prefs.Preference
+            android:key="clickRegionalConfig"
+            android:summary="@string/click_regional_config"
+            android:title="@string/click_regional_config" />
+
+        <io.legado.app.lib.prefs.Preference
             android:key="localPassword"
             android:summary="@string/set_local_password_summary"
             android:title="@string/set_local_password" />
