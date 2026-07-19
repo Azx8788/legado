@@ -664,7 +664,7 @@ class BookSourceActivity : VMBaseActivity<ActivityBookSourceBinding, BookSourceV
         alert(titleResource = R.string.check_book_source) {
             setMessage(msg)
             if (result.failed > 0) {
-                okButton(R.string.delete_invalid_source) {
+                positiveButton(R.string.delete_invalid_source) {
                     //二次确认：校验失败不一定不可用
                     alert(R.string.delete_invalid_source) {
                         setMessage(
