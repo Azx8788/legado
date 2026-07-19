@@ -947,6 +947,11 @@
     <string name="seconds">秒</string>
     <string name="less_than">小於</string>
     <string name="check_source_config_summary">校驗超時：%1$s秒\n校驗項目：%2$s</string>
+    <string name="check_source_result_summary">共校驗：%1$d 個\n可用：%2$d 個\n失效：%3$d 個\n\n注意：標記為失效的書源不一定不可用，可能因網路波動、逾時或伺服器臨時問題導致校驗失敗，刪除前請謹慎判斷。</string>
+    <string name="delete_invalid_source">一鍵刪除失效書源</string>
+    <string name="delete_invalid_source_confirm">將刪除 %1$d 個分組含「失效」的書源。\n\n失效不等於不可使用，可能因網路抖動、逾時等原因導致校驗失敗。確認要刪除嗎？</string>
+    <string name="delete_invalid_source_done">已刪除 %1$d 個失效書源</string>
+    <string name="no_invalid_source">未發現失效書源</string>
     <string name="record_debug_log">記錄除錯日誌</string>
     <string name="sub_dir">子資料夾</string>
     <string name="general">全域</string>

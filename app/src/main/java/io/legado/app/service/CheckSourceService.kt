@@ -21,6 +21,7 @@ import io.legado.app.help.IntentData
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.source.exploreKinds
 import io.legado.app.model.CheckSource
+import io.legado.app.model.CheckSourceResult
 import io.legado.app.model.Debug
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.ui.book.source.manage.BookSourceActivity
@@ -58,6 +59,8 @@ class CheckSourceService : BaseService() {
     private var checkJob: Job? = null
     private var originSize = 0
     private var finishCount = 0
+    private var successCount = 0
+    private var failedCount = 0
 
     private val notificationBuilder by lazy {
         NotificationCompat.Builder(this, AppConst.channelIdReadAloud)
@@ -92,7 +95,14 @@ class CheckSourceService : BaseService() {
         super.onDestroy()
         Debug.finishChecking()
         searchCoroutine.close()
-        postEvent(EventBus.CHECK_SOURCE_DONE, 0)
+        postEvent(
+            EventBus.CHECK_SOURCE_DONE,
+            CheckSourceResult(
+                total = originSize,
+                success = successCount,
+                failed = failedCount
+            )
+        )
         notificationManager.cancel(NotificationId.CheckSourceService)
     }
 
@@ -111,12 +121,19 @@ class CheckSourceService : BaseService() {
             }.onStart {
                 originSize = ids.size
                 finishCount = 0
+                successCount = 0
+                failedCount = 0
                 notificationMsg = getString(R.string.progress_show, "", 0, originSize)
                 upNotification()
             }.onEachParallel(threadCount) {
                 checkSource(it)
             }.onEach {
                 finishCount++
+                if (it.getInvalidGroupNames().isNotBlank()) {
+                    failedCount++
+                } else {
+                    successCount++
+                }
                 notificationMsg = getString(
                     R.string.progress_show,
                     it.bookSourceName,

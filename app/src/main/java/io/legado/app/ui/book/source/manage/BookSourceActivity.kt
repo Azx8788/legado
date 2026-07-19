@@ -33,6 +33,7 @@ import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.lib.theme.primaryTextColor
 import io.legado.app.model.CheckSource
+import io.legado.app.model.CheckSourceResult
 import io.legado.app.model.Debug
 import io.legado.app.ui.association.ImportBookSourceDialog
 import io.legado.app.ui.book.search.SearchActivity
@@ -625,7 +626,7 @@ class BookSourceActivity : VMBaseActivity<ActivityBookSourceBinding, BookSourceV
                     }.apply { show() }
             }
         }
-        observeEvent<Int>(EventBus.CHECK_SOURCE_DONE) {
+        observeEvent<CheckSourceResult>(EventBus.CHECK_SOURCE_DONE) { result ->
             keepScreenOn(false)
             snackBar?.dismiss()
             snackBar = null
@@ -634,11 +635,67 @@ class BookSourceActivity : VMBaseActivity<ActivityBookSourceBinding, BookSourceV
                 adapter.itemCount,
                 bundleOf(Pair("checkSourceMessage", null))
             )
+            //原版逻辑：如有失效分组且当前无搜索条件，自动过滤"失效"
+            var hasInvalid = false
             groups.forEach { group ->
                 if (group.contains("失效") && searchView.query.isEmpty()) {
-                    searchView.setQuery("失效", true)
-                    toastOnUi("发现有失效书源，已为您自动筛选！")
+                    hasInvalid = true
                 }
+            }
+            if (hasInvalid && searchView.query.isEmpty()) {
+                searchView.setQuery("失效", true)
+            }
+            //弹出校验结果汇总对话框
+            showCheckSourceSummary(result)
+        }
+    }
+
+    /**
+     * 显示校验结果汇总对话框，并提供一键删除失效书源入口
+     */
+    private fun showCheckSourceSummary(result: CheckSourceResult) {
+        if (result.total <= 0) return
+        val msg = getString(
+            R.string.check_source_result_summary,
+            result.total,
+            result.success,
+            result.failed
+        )
+        alert(titleResource = R.string.check_book_source) {
+            setMessage(msg)
+            if (result.failed > 0) {
+                okButton(R.string.delete_invalid_source) {
+                    //二次确认：校验失败不一定不可用
+                    alert(R.string.delete_invalid_source) {
+                        setMessage(
+                            getString(R.string.delete_invalid_source_confirm, result.failed)
+                        )
+                        yesButton {
+                            viewModel.deleteInvalidSources { deleted ->
+                                runOnUiThread {
+                                    if (deleted > 0) {
+                                        toastOnUi(
+                                            getString(
+                                                R.string.delete_invalid_source_done,
+                                                deleted
+                                            )
+                                        )
+                                    } else {
+                                        toastOnUi(R.string.no_invalid_source)
+                                    }
+                                    //清除"失效"过滤条件
+                                    if (searchView.query.toString() == "失效") {
+                                        searchView.setQuery("", true)
+                                    }
+                                }
+                            }
+                        }
+                        noButton()
+                    }
+                }
+                cancelButton()
+            } else {
+                okButton()
             }
         }
     }

@@ -956,6 +956,11 @@
     <string name="seconds">Seconds</string>
     <string name="less_than">Less than</string>
     <string name="check_source_config_summary">Check timeout: %1$ss\nCheck item:%2$s</string>
+    <string name="check_source_result_summary">Total checked: %1$d\nAvailable: %2$d\nInvalid: %3$d\n\nNote: sources marked invalid may still work — failures can be caused by network instability, timeouts, or temporary server issues. Please review carefully before deleting.</string>
+    <string name="delete_invalid_source">Delete invalid sources</string>
+    <string name="delete_invalid_source_confirm">This will delete %1$d sources whose group contains \"invalid\".\n\nInvalid ≠ unusable. A source may fail due to network jitter, timeout, etc. Are you sure you want to delete them?</string>
+    <string name="delete_invalid_source_done">Deleted %1$d invalid sources</string>
+    <string name="no_invalid_source">No invalid sources found</string>
     <string name="record_debug_log">Record debug log</string>
     <string name="sub_dir">Sub dir</string>
     <string name="general">General</string>
