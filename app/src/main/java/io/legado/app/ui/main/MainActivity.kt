@@ -227,7 +227,12 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         }
         LocalConfig.disclaimerAccepted = true
         val disclaimer = String(assets.open("disclaimer.md").readBytes())
-        val dialog = TextDialog(getString(R.string.disclaimer), disclaimer, TextDialog.Mode.MD)
+        val dialog = TextDialog(
+            getString(R.string.disclaimer),
+            disclaimer,
+            TextDialog.Mode.MD,
+            time = 5000
+        )
         dialog.setOnDismissListener {
             block.resume(null)
         }

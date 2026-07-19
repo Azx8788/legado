@@ -101,6 +101,10 @@ class TextDialog() : BaseDialogFragment(R.layout.dialog_text_view) {
             time = it.getLong("time", 0L)
         }
         if (time > 0) {
+            // 倒计时期间禁用关闭按钮，强制用户阅读
+            val closeItem = binding.toolBar.menu.findItem(R.id.menu_close)
+            closeItem?.isEnabled = false
+            closeItem?.isVisible = false
             binding.badgeView.setBadgeCount((time / 1000).toInt())
             lifecycleScope.launch {
                 while (time > 0) {
@@ -110,6 +114,9 @@ class TextDialog() : BaseDialogFragment(R.layout.dialog_text_view) {
                     if (time <= 0) {
                         view.post {
                             dialog?.setCancelable(true)
+                            // 倒计时结束后恢复关闭按钮
+                            closeItem?.isEnabled = true
+                            closeItem?.isVisible = true
                             if (autoClose) dialog?.cancel()
                         }
                     }

@@ -64,6 +64,14 @@ jobs:
           echo "统一版本号"
           sed "/def version/c def version = \"${{ env.VERSION }}\"" $GITHUB_WORKSPACE/app/build.gradle  -i
 
+      - name: Bump Version Code
+        run: |
+          # 使用 Unix 时间戳作为 versionCode，确保每次构建都比之前大
+          # （远超原 10000 + gitCommits 的值，避免降级问题）
+          ts=$(date +%s)
+          echo "使用 versionCode = $ts"
+          sed "s/versionCode 10000 + gitCommits/versionCode $ts/" $GITHUB_WORKSPACE/app/build.gradle -i
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
