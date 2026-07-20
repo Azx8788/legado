@@ -288,7 +288,7 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
     /**
      * 扫描公共 backup 目录，若发现备份压缩文件则弹窗询问用户是否恢复。
      */
-    private fun scanBackupAndPromptRestore(block: kotlin.coroutines.CancellableContinuation<Unit>) {
+    private fun scanBackupAndPromptRestore(block: kotlinx.coroutines.CancellableContinuation<Unit>) {
         val backupFiles = ExternalStorageHelp.listBackupZipFiles()
         if (backupFiles.isEmpty()) {
             if (block.isActive) block.resume(Unit)
@@ -300,7 +300,8 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             newest.name,
             backupFiles.size
         )
-        alert(R.string.restore, msg) {
+        alert(titleResource = R.string.restore) {
+            setMessage(msg)
             okButton {
                 lifecycleScope.launch {
                     runCatching {
