@@ -2,6 +2,7 @@
 
 package io.legado.app.ui.main
 
+import android.net.Uri
 import android.os.Bundle
 import android.text.format.DateUtils
 import android.view.MenuItem
@@ -30,7 +31,11 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.storage.Backup
+import io.legado.app.help.storage.ExternalStorageHelp
+import io.legado.app.help.storage.Restore
 import io.legado.app.lib.dialogs.alert
+import io.legado.app.lib.permission.Permissions
+import io.legado.app.lib.permission.PermissionsCompat
 import io.legado.app.lib.theme.elevation
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.service.BaseReadAloudService
@@ -121,6 +126,8 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             if (!privacyPolicy()) return@launch
             //免责声明（仅首次启动弹一次）
             showDisclaimer()
+            //存储权限申请 + 创建公共下载/备份目录 + 扫描恢复
+            ensureStoragePermissionAndDirs()
             //版本更新
             upVersion()
             //设置本地密码
@@ -237,6 +244,82 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             block.resume(null)
         }
         showDialogFragment(dialog)
+    }
+
+    /**
+     * 申请存储权限，并创建公共下载/备份目录结构；如检测到备份文件则询问是否恢复。
+     * 仅在首次启动时执行一次。
+     */
+    private suspend fun ensureStoragePermissionAndDirs() =
+        suspendCancellableCoroutine sc@{ block ->
+            if (LocalConfig.storagePermAndDirsInit) {
+                block.resume(null)
+                return@sc
+            }
+            //申请存储权限（Android 11+ 走 MANAGE_EXTERNAL_STORAGE，旧版本走 READ/WRITE_EXTERNAL_STORAGE）
+            PermissionsCompat.Builder()
+                .addPermissions(*Permissions.Group.STORAGE)
+                .rationale(R.string.tip_perm_request_storage_init)
+                .onGranted {
+                    //权限通过后创建目录结构
+                    ExternalStorageHelp.ensureAppDirs()
+                    //若用户未自定义备份路径，则默认指向公共 backup 目录
+                    if (AppConfig.backupPath.isNullOrEmpty()) {
+                        AppConfig.backupPath = ExternalStorageHelp.backupDir.absolutePath
+                    }
+                    LocalConfig.storagePermAndDirsInit = true
+                    //扫描 backup 目录，发现 .zip 则询问是否恢复
+                    scanBackupAndPromptRestore(block)
+                }
+                .onDenied {
+                    //权限被拒绝，依然标记为已初始化，避免每次启动都弹
+                    LocalConfig.storagePermAndDirsInit = true
+                    toastOnUi(R.string.storage_perm_denied_no_restore)
+                    block.resume(null)
+                }
+                .onError {
+                    LocalConfig.storagePermAndDirsInit = true
+                    toastOnUi(R.string.storage_perm_denied_no_restore)
+                    block.resume(null)
+                }
+                .request()
+        }
+
+    /**
+     * 扫描公共 backup 目录，若发现备份压缩文件则弹窗询问用户是否恢复。
+     */
+    private fun scanBackupAndPromptRestore(block: kotlin.coroutines.CancellableContinuation<Unit>) {
+        val backupFiles = ExternalStorageHelp.listBackupZipFiles()
+        if (backupFiles.isEmpty()) {
+            if (block.isActive) block.resume(Unit)
+            return
+        }
+        val newest = backupFiles.first()
+        val msg = getString(
+            R.string.found_backup_restore_prompt,
+            newest.name,
+            backupFiles.size
+        )
+        alert(R.string.restore, msg) {
+            okButton {
+                lifecycleScope.launch {
+                    runCatching {
+                        Restore.restore(this@MainActivity, Uri.fromFile(newest))
+                    }.onFailure {
+                        toastOnUi(it.localizedMessage ?: "恢复失败")
+                    }
+                    toastOnUi(R.string.restore_done)
+                    if (block.isActive) block.resume(Unit)
+                }
+            }
+            cancelButton {
+                if (block.isActive) block.resume(Unit)
+            }
+            onDismiss {
+                //用户可能点外部 dismiss，确保协程继续
+                if (block.isActive) block.resume(Unit)
+            }
+        }
     }
 
     /**

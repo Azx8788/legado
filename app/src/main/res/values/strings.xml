@@ -115,6 +115,10 @@
     <string name="web_dav_set_import_old">WebDav settings/Import legacy data</string>
     <string name="backup">Backup</string>
     <string name="restore">Restore</string>
+    <string name="restore_done">Restore completed</string>
+    <string name="tip_perm_request_storage_init">Legado needs storage access to create the public download and backup folders under Download/legado/ and to scan for existing backups. Please grant the storage permission.</string>
+    <string name="storage_perm_denied_no_restore">Storage permission denied. Download and backup folders are not created. You can grant it later in Settings.</string>
+    <string name="found_backup_restore_prompt">Found %2$d backup file(s) in the public backup folder.\n\nRestore the latest backup \"%1$s\"?\n\nRestoring will overwrite current data with the backup content.</string>
     <string name="backup_permission">Backup needs storage permission</string>
     <string name="restore_permission">Restore needs storage permission</string>
     <string name="ok">OK</string>

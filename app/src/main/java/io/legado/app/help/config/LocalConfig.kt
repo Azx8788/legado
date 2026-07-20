@@ -120,6 +120,15 @@ by appCtx.getSharedPreferences("local", Context.MODE_PRIVATE) {
             putBoolean("disclaimerAccepted", value)
         }
 
+    /**
+     * 是否已完成存储权限申请与公共目录初始化（仅首次启动时执行一次）
+     */
+    var storagePermAndDirsInit: Boolean
+        get() = getBoolean("storagePermAndDirsInit")
+        set(value) {
+            putBoolean("storagePermAndDirsInit", value)
+        }
+
     var deleteBookOriginal: Boolean
         get() = getBoolean("deleteBookOriginal")
         set(value) {

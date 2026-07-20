@@ -114,6 +114,10 @@
     <string name="web_dav_set_import_old">WebDav 设置/导入旧版本数据</string>
     <string name="backup">备份</string>
     <string name="restore">恢复</string>
+    <string name="restore_done">恢复完成</string>
+    <string name="tip_perm_request_storage_init">阅读需要存储权限以在公共 Download 目录下创建 legado/Download 与 legado/backup 文件夹，并扫描已有备份。请授权存储权限。</string>
+    <string name="storage_perm_denied_no_restore">存储权限被拒绝，未创建下载与备份目录，也不会扫描恢复备份。可在系统设置中后续授权。</string>
+    <string name="found_backup_restore_prompt">在公共备份目录发现 %2$d 个备份文件。\n\n是否恢复最新的备份“%1$s”？\n\n恢复会用备份内容覆盖当前数据。</string>
     <string name="backup_permission">备份请给予存储权限</string>
     <string name="restore_permission">恢复请给予存储权限</string>
     <string name="ok">确认</string>

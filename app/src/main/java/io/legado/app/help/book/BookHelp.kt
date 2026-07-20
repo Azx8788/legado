@@ -14,6 +14,7 @@ import io.legado.app.data.entities.BookSource
 import io.legado.app.help.config.AppConfig
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.help.storage.ExternalStorageHelp
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.FileUtils
 import io.legado.app.utils.ImageUtils
@@ -54,13 +55,20 @@ import kotlin.math.min
 
 @Suppress("unused", "ConstPropertyName")
 object BookHelp {
-    private val downloadDir: File = appCtx.externalFiles
+    /**
+     * 下载缓存目录。
+     * 优先使用公共下载目录下的 legado/Download，方便用户在文件管理器查看；
+     * 如公共目录不可用（无权限或创建失败），回退到应用专属外部存储区。
+     */
+    private val downloadDir: File by lazy {
+        runCatching { ExternalStorageHelp.novelDownloadDir }.getOrElse { appCtx.externalFiles }
+    }
     private const val cacheFolderName = "book_cache"
     private const val cacheImageFolderName = "images"
     private const val cacheEpubFolderName = "epub"
     private val downloadImages = ConcurrentHashMap<String, Mutex>()
 
-    val cachePath = FileUtils.getPath(downloadDir, cacheFolderName)
+    val cachePath by lazy { FileUtils.getPath(downloadDir, cacheFolderName) }
 
     fun clearCache() {
         FileUtils.delete(

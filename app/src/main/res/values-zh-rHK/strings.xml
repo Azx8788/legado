@@ -107,6 +107,10 @@
     <string name="web_dav_set_import_old">WebDav 設定/還原舊版本數據</string>
     <string name="backup">備份</string>
     <string name="restore">還原</string>
+    <string name="restore_done">還原完成</string>
+    <string name="tip_perm_request_storage_init">閱讀需要儲存權限以在公共 Download 目錄下建立 legado/Download 與 legado/backup 資料夾，並掃描已有備份。請授權儲存權限。</string>
+    <string name="storage_perm_denied_no_restore">儲存權限被拒絕，未建立下載與備份目錄，也不會掃描還原備份。可在系統設定中後續授權。</string>
+    <string name="found_backup_restore_prompt">在公共備份目錄發現 %2$d 個備份檔案。\n\n是否還原最新的備份「%1$s」？\n\n還原會用備份內容覆蓋目前資料。</string>
     <string name="backup_permission">備份請給予存儲權限</string>
     <string name="restore_permission">還原請給予存儲權限</string>
     <string name="ok">確認</string>
