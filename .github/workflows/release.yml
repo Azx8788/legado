@@ -62,7 +62,7 @@ jobs:
       - name: Print Version Info
         run: |
           echo "版本号已在 build.gradle 中设置为: ${{ env.VERSION }}"
-          echo "versionCode 使用 System.currentTimeMillis() / 1000 + 100000000"
+          echo "versionCode 使用 (int)(System.currentTimeMillis() / 1000)，符合 Android 官方文档要求"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
