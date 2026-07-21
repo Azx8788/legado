@@ -22,6 +22,8 @@ static def releaseTime() {
 def name = "legado"
 def version = "4.0"
 def gitCommits = Integer.parseInt('git rev-list HEAD --count'.execute().text.trim())
+// 使用 Unix 时间戳作为 versionCode，确保每次构建都递增且远大于官方版本
+def code = (int) (System.currentTimeMillis() / 1000)
 
 android {
     compileSdk = compile_sdk_version
@@ -50,7 +52,7 @@ android {
         applicationId "io.legado.app"
         minSdk 21
         targetSdk 36
-        versionCode (int) (System.currentTimeMillis() / 1000)
+        versionCode code
         versionName version
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         project.ext.set("archivesBaseName", name + "_" + version)
