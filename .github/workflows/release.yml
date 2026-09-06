@@ -1,121 +1,79 @@
 name: Release Build
 
 on:
-#  push:
-#    branches:
-#      - master
-#    paths:
-#      - 'CHANGELOG.md'
   workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如: 4.0.0)'
+        required: true
+        default: '4.0.0'
+  push:
+    tags:
+      - 'v*'
 
-permissions:
-  contents: write
+env:
+  JAVA_VERSION: '17'
 
 jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
-    outputs:
-      version: ${{ steps.set-ver.outputs.version }}
-      sign: ${{ steps.check.outputs.sign }}
-    steps:
-      - id: set-ver
-        run: |
-          echo "version=4.0" >> $GITHUB_OUTPUT
-      - id: check
-        run: |
-          if [ ! -z "${{ secrets.SIGNING_KEYSTORE }}" ]; then
-            echo "sign=yes" >> $GITHUB_OUTPUT
-          fi
-
   build:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.sign }}
-    strategy:
-      matrix:
-        product: [ app ]
-      fail-fast: false
     runs-on: ubuntu-latest
-    env:
-      product: ${{ matrix.product }}
-      VERSION: ${{ needs.prepare.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
+    permissions:
+      contents: write
 
-      - name: Set up JDK 17
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup Java ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
+          java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
-          java-version: 17
+          cache: 'gradle'
 
-      - name: Release Apk Sign
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Download Gradle wrapper
+        run: gradle wrapper --gradle-version 8.13
+
+      - name: Verify Gradle wrapper
+        run: gradlew -v
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        env:
+          RELEASE_STORE_FILE: ${{ secrets.RELEASE_STORE_FILE }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+      - name: Find APK
+        id: find_apk
         run: |
-          # not use this output
-          # echo "KeyStore=yes" >> $GITHUB_OUTPUT
-          echo -e "\n" >> gradle.properties
-          echo RELEASE_KEY_ALIAS='${{ secrets.SIGNING_KEY_ALIAS }}' >> gradle.properties
-          echo RELEASE_KEY_PASSWORD='${{ secrets.SIGNING_KEY_PASSWORD }}' >> gradle.properties
-          echo RELEASE_STORE_PASSWORD='${{ secrets.SIGNING_STORE_PASSWORD }}' >> gradle.properties
-          echo RELEASE_STORE_FILE='./key.jks' >> gradle.properties
-          echo ${{ secrets.SIGNING_KEYSTORE }} | base64 --decode > $GITHUB_WORKSPACE/app/key.jks
+          APK=$(find app/build/outputs/apk -name "*.apk" | head -1)
+          echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          echo "APK 文件: $APK"
+          ls -lh "$APK"
 
-      - name: Print Version Info
-        run: |
-          echo "版本号已在 build.gradle 中设置为: ${{ env.VERSION }}"
-          echo "versionCode 使用 (int)(System.currentTimeMillis() / 1000)，符合 Android 官方文档要求"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Build With Gradle
-        run: |
-          echo "开始进行${{ env.product }}构建"
-          chmod +x gradlew
-          ./gradlew assemble${{ env.product }}release --build-cache --parallel --daemon --warning-mode all
-
-      - name: Organize the Files
-        run: |
-          mkdir -p ${{ github.workspace }}/apk/
-          cp -rf ${{ github.workspace }}/app/build/outputs/apk/*/*/*.apk ${{ github.workspace }}/apk/
-          
-      - name: Upload App To Artifact
+      - name: Upload APK as Action Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: legado_${{ env.product }}
-          path: ${{ github.workspace }}/apk/*.apk
+          name: legado-release-apk
+          path: ${ steps.find_apk.outputs.apk_path }
+          retention-days: 30
 
-      - name: Release
-        if: ${{ env.product == 'app' }}
+      - name: Create Release
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          name: legado_app_${{ env.VERSION }}
-          tag_name: ${{ env.VERSION }}
-          body_path: ${{ github.workspace }}/CHANGELOG.md
+          tag_name: ${ github.event.inputs.version || github.ref_name }
+          name: Legado ${ github.event.inputs.version || github.ref_name }
           draft: false
           prerelease: false
-          files: ${{ github.workspace }}/apk/legado_app_*.apk
+          files: ${ steps.find_apk.outputs.apk_path }
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Push Assets To "release" Branch
-        if: ${{ github.actor == 'gedoor' }}
-        run: |
-          cd $GITHUB_WORKSPACE/apk/
-          git init
-          git checkout -b release
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add origin "https://${{ github.actor }}:${{ secrets.ACTIONS_TOKEN }}@github.com/${{ github.actor }}/release"
-          git add *.apk
-          git commit -m "${{ env.VERSION }}"
-          git push -f -u origin release
-          
-      - name: Purge Jsdelivr Cache
-        if: ${{ github.actor == 'gedoor' }}
-        run: |
-          result=$(curl -s https://purge.jsdelivr.net/gh/${{ github.actor }}/release@release/)
-          if echo $result |grep -q 'success.*true'; then
-            echo "jsdelivr缓存更新成功"
-          else
-            echo $result
-          fi
+          GITHUB_TOKEN: ${ secrets.GITHUB_TOKEN }
