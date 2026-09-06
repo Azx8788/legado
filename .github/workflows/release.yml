@@ -26,21 +26,15 @@ jobs:
         with:
           lfs: true
 
-      - name: Setup Java ${{ env.JAVA_VERSION }}
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: '17'
           distribution: 'temurin'
           cache: 'gradle'
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-
-      - name: Download Gradle wrapper
-        run: gradle wrapper --gradle-version 8.13
-
-      - name: Verify Gradle wrapper
-        run: gradlew -v
 
       - name: Build Release APK
         run: ./gradlew assembleRelease --no-daemon --stacktrace
@@ -54,26 +48,25 @@ jobs:
         id: find_apk
         run: |
           APK=$(find app/build/outputs/apk -name "*.apk" | head -1)
-          echo "apk_path=$APK" >> $GITHUB_OUTPUT
           echo "APK 文件: $APK"
           ls -lh "$APK"
+          echo "apk_path=$APK" >> $GITHUB_OUTPUT
 
       - name: Upload APK as Action Artifact
         uses: actions/upload-artifact@v4
         with:
           name: legado-release-apk
-          path: ${ steps.find_apk.outputs.apk_path }
+          path: ${{ steps.find_apk.outputs.apk_path }}
           retention-days: 30
 
       - name: Create Release
         if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-        id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${ github.event.inputs.version || github.ref_name }
-          name: Legado ${ github.event.inputs.version || github.ref_name }
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          name: Legado ${{ github.event.inputs.version || github.ref_name }}
           draft: false
           prerelease: false
-          files: ${ steps.find_apk.outputs.apk_path }
+          files: ${{ steps.find_apk.outputs.apk_path }}
         env:
-          GITHUB_TOKEN: ${ secrets.GITHUB_TOKEN }
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
