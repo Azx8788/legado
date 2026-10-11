@@ -1266,6 +1266,7 @@ Cron 使用 5 个字段：**分 时 日 月 周**
     <string name="show_add_to_shelf_alert_summary">阅读未放入书架的书籍在返回时提示放入书架</string>
     <string name="review">段评</string>
     <string name="nostr_review">Nostr 段评</string>
+    <string name="nostr_settings_category">Nostr 段评</string>
     <string name="nostr_review_summary">从 Nostr 中继读取公开段评</string>
     <string name="nostr_signer">Nostr 远程签名器</string>
     <string name="nostr_signer_not_connected">未连接</string>

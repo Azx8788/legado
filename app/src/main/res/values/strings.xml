@@ -1332,6 +1332,7 @@ Placeholders:
     <string name="rule_review_detail_badge">徽章（detailBadgeRule）</string>
     <string name="rule_review_detail_content">Comment content protocol（detailContentRule, text/img/audio/time/likeCount/replyCount）</string>
     <string name="nostr_review">Nostr paragraph comments</string>
+    <string name="nostr_settings_category">Nostr paragraph comments</string>
     <string name="nostr_review_summary">Read public paragraph comments from Nostr relays</string>
     <string name="nostr_signer">Nostr remote signer</string>
     <string name="nostr_signer_not_connected">Not connected</string>

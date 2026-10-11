@@ -48,6 +48,27 @@
     </io.legado.app.lib.prefs.PreferenceCategory>
 
     <io.legado.app.lib.prefs.PreferenceCategory
+        android:title="@string/nostr_settings_category"
+        app:allowDividerAbove="false"
+        app:allowDividerBelow="false">
+
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="true"
+            android:key="nostrReview"
+            android:summary="@string/nostr_review_summary"
+            android:title="@string/nostr_review" />
+
+        <io.legado.app.lib.prefs.Preference
+            android:key="nostrSigner"
+            android:summary="@string/nostr_signer_not_connected"
+            android:title="@string/nostr_signer" />
+
+        <io.legado.app.lib.prefs.Preference
+            android:key="nostrConnectQr"
+            android:title="@string/nostr_signer_pair_qr" />
+    </io.legado.app.lib.prefs.PreferenceCategory>
+
+    <io.legado.app.lib.prefs.PreferenceCategory
         android:title="@string/other_setting"
         app:allowDividerBelow="false">
 
@@ -220,21 +241,6 @@
             android:key="recordHttpLog"
             android:summary="@string/record_http_log_s"
             android:title="@string/record_http_log" />
-
-        <io.legado.app.lib.prefs.SwitchPreference
-            android:defaultValue="true"
-            android:key="nostrReview"
-            android:summary="@string/nostr_review_summary"
-            android:title="@string/nostr_review" />
-
-        <io.legado.app.lib.prefs.Preference
-            android:key="nostrSigner"
-            android:summary="@string/nostr_signer_not_connected"
-            android:title="@string/nostr_signer" />
-
-        <io.legado.app.lib.prefs.Preference
-            android:key="nostrConnectQr"
-            android:title="@string/nostr_signer_pair_qr" />
 
         <io.legado.app.lib.prefs.SwitchPreference
             android:defaultValue="false"
