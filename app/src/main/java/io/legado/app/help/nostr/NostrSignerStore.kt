@@ -1,0 +1,103 @@
+package io.legado.app.help.nostr
+
+import android.content.Context
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import org.json.JSONArray
+import org.json.JSONObject
+import splitties.init.appCtx
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+
+object NostrSignerStore {
+
+    private const val keyAlias = "legado.nostr.client-key"
+    private const val preferenceKey = "encryptedSession"
+    private const val transformation = "AES/GCM/NoPadding"
+    private val preferences by lazy {
+        appCtx.getSharedPreferences("nostr_signer", Context.MODE_PRIVATE)
+    }
+
+    data class Session(
+        val bunkerUri: String,
+        val clientPrivateKey: ByteArray,
+        val clientPublicKey: String,
+        val signerPubkey: String,
+        val userPubkey: String,
+        val relays: List<String>
+    )
+
+    fun save(session: Session) {
+        val json = JSONObject()
+            .put("bunkerUri", session.bunkerUri)
+            .put("clientPrivateKey", session.clientPrivateKey.toHex())
+            .put("clientPublicKey", session.clientPublicKey)
+            .put("signerPubkey", session.signerPubkey)
+            .put("userPubkey", session.userPubkey)
+            .put("relays", JSONArray(session.relays))
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        val cipher = Cipher.getInstance(transformation)
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+        val encrypted = cipher.iv + cipher.doFinal(json)
+        preferences.edit().putString(preferenceKey, Base64.encodeToString(encrypted, Base64.NO_WRAP)).apply()
+    }
+
+    fun load(): Session? = runCatching {
+        val encoded = preferences.getString(preferenceKey, null) ?: return null
+        val encrypted = Base64.decode(encoded, Base64.NO_WRAP)
+        require(encrypted.size > IV_LENGTH)
+        val iv = encrypted.copyOfRange(0, IV_LENGTH)
+        val ciphertext = encrypted.copyOfRange(IV_LENGTH, encrypted.size)
+        val cipher = Cipher.getInstance(transformation)
+        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(TAG_LENGTH_BITS, iv))
+        val json = JSONObject(cipher.doFinal(ciphertext).toString(Charsets.UTF_8))
+        val relays = json.getJSONArray("relays")
+        Session(
+            bunkerUri = json.getString("bunkerUri"),
+            clientPrivateKey = json.getString("clientPrivateKey").hexToByteArray(),
+            clientPublicKey = json.getString("clientPublicKey"),
+            signerPubkey = json.getString("signerPubkey"),
+            userPubkey = json.getString("userPubkey"),
+            relays = (0 until relays.length()).map { relays.getString(it) }
+        )
+    }.getOrNull()
+
+    fun clear() {
+        preferences.edit().remove(preferenceKey).apply()
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (keyStore.containsAlias(keyAlias)) keyStore.deleteEntry(keyAlias)
+    }
+
+    private fun getOrCreateKey(): SecretKey {
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (keyStore.getKey(keyAlias, null) as? SecretKey)?.let { return it }
+        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
+            init(
+                KeyGenParameterSpec.Builder(
+                    keyAlias,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+                )
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(256)
+                    .build()
+            )
+            generateKey()
+        }
+    }
+
+    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+
+    private fun String.hexToByteArray(): ByteArray {
+        require(length == 64 && all { it.digitToIntOrNull(16) != null })
+        return chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    }
+
+    private const val IV_LENGTH = 12
+    private const val TAG_LENGTH_BITS = 128
+}

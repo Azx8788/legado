@@ -21,6 +21,7 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.appcompat.widget.AppCompatImageButton
 import com.google.android.flexbox.FlexboxLayout
 import kotlinx.coroutines.CancellationException
 import io.legado.app.R
@@ -35,6 +36,8 @@ import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.help.glide.ImageLoader
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.nostr.NostrReviewClient
+import io.legado.app.help.nostr.NostrReviewPublisher
+import io.legado.app.help.nostr.NostrSignerStore
 import io.legado.app.model.ReadBook
 import io.legado.app.model.analyzeRule.AnalyzeRule
 import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setChapter
@@ -195,6 +198,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             }
             binding.toolBar.addView(countView, lp)
         }
+        addNostrCommentAction()
         binding.toolBar.setNavigationIcon(R.drawable.ic_baseline_close)
         binding.toolBar.navigationIcon?.setTint(getCompatColor(R.color.secondaryText))
         binding.toolBar.setNavigationOnClickListener { dismiss() }
@@ -220,6 +224,74 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             }
         })
         loadDetailPage(paragraphNum, 1, append = false)
+    }
+
+    private fun addNostrCommentAction() {
+        if (!AppConfig.nostrReviewEnabled || NostrSignerStore.load() == null) return
+        binding.toolBar.findViewWithTag<View>("nostr_comment_action")?.let(binding.toolBar::removeView)
+        binding.toolBar.findViewWithTag<View>("review_count_tag")?.let {
+            (it.layoutParams as? androidx.appcompat.widget.Toolbar.LayoutParams)?.marginEnd = 48.dpToPx()
+        }
+        val action = AppCompatImageButton(requireContext()).apply {
+            tag = "nostr_comment_action"
+            setImageResource(R.drawable.ic_edit)
+            imageTintList = android.content.res.ColorStateList.valueOf(
+                requireContext().getCompatColor(R.color.secondaryText)
+            )
+            contentDescription = getString(R.string.nostr_comment_write)
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            setOnClickListener { showNostrCommentEditor() }
+        }
+        val layoutParams = androidx.appcompat.widget.Toolbar.LayoutParams(
+            42.dpToPx(),
+            42.dpToPx(),
+            Gravity.END or Gravity.CENTER_VERTICAL
+        )
+        binding.toolBar.addView(action, layoutParams)
+    }
+
+    private fun showNostrCommentEditor() {
+        val editBinding = io.legado.app.databinding.DialogEditTextBinding.inflate(layoutInflater).apply {
+            editView.hint = getString(R.string.nostr_comment_hint)
+            editView.minLines = 3
+            editView.maxLines = 8
+            editView.setSingleLine(false)
+        }
+        requireContext().alert(getString(R.string.nostr_comment_write)) {
+            customView { editBinding.root }
+            positiveButton(getString(R.string.nostr_comment_publish)) {
+                val comment = editBinding.editView.text?.toString().orEmpty().trim()
+                if (comment.isBlank()) return@positiveButton
+                binding.rotateLoading.visible()
+                lifecycleScope.launch {
+                    runCatching {
+                        val book = ReadBook.book ?: error("No book is open")
+                        val chapterIndex = ReadBook.durChapterIndex
+                        val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, chapterIndex)
+                            ?: error("Current chapter is unavailable")
+                        val textChapter = ReadBook.curTextChapter?.takeIf {
+                            it.chapter.index == chapterIndex
+                        } ?: error("Current chapter text is unavailable")
+                        withContext(IO) {
+                            NostrReviewPublisher.postParagraphComment(
+                                book = book,
+                                chapterUrl = chapter.url,
+                                paragraphs = textChapter.paragraphTexts,
+                                paragraphIndex = paragraphNum,
+                                comment = comment
+                            )
+                        }
+                    }.onSuccess {
+                        binding.rotateLoading.gone()
+                        loadDetailPage(paragraphNum, 1, append = false)
+                    }.onFailure {
+                        binding.rotateLoading.gone()
+                        context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
+                    }
+                }
+            }
+            cancelButton()
+        }
     }
 
     private fun setupDragHandle() {
@@ -634,12 +706,15 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         id = id,
         avatar = null,
         name = name,
+        nostrAuthorPubkey = authorPubkey,
+        nostrRootExcerptId = rootExcerptId,
+        nostrRootExcerptPubkey = rootExcerptPubkey,
         badges = emptyList(),
         content = content,
         imageUrl = null,
         audioUrl = null,
         time = time,
-        likeCount = null,
+        likeCount = likeCount,
         replyCount = replies.size,
         replies = replies.map { it.toReviewDetailItem() }
     )
@@ -679,6 +754,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val id: String?,
         val avatar: String?,
         val name: String?,
+        val nostrAuthorPubkey: String? = null,
+        val nostrRootExcerptId: String? = null,
+        val nostrRootExcerptPubkey: String? = null,
         val badges: List<String>,
         val content: String?,
         val imageUrl: String?,
@@ -693,6 +771,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val id: String?,
         val avatar: String?,
         val name: String?,
+        val nostrAuthorPubkey: String? = null,
+        val nostrRootExcerptId: String? = null,
+        val nostrRootExcerptPubkey: String? = null,
         val badges: List<String>,
         val content: String?,
         val imageUrl: String?,
@@ -752,6 +833,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         id = id,
         avatar = avatar,
         name = name,
+        nostrAuthorPubkey = nostrAuthorPubkey,
+        nostrRootExcerptId = nostrRootExcerptId,
+        nostrRootExcerptPubkey = nostrRootExcerptPubkey,
         badges = badges,
         content = content,
         imageUrl = imageUrl,
@@ -1037,6 +1121,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.tvTime.gone()
                 binding.ivMedia.gone()
                 binding.tvAudio.gone()
+                binding.tvReply.gone()
                 binding.tvContent.visible()
                 binding.tvContent.text = context.getString(R.string.review_more_replies, item.moreCount)
                 binding.tvContent.textSize = 14f
@@ -1103,6 +1188,11 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.llBadges.visibility = if (item.badges.isEmpty()) View.GONE else View.VISIBLE
                 binding.tvContent.text = item.content.orEmpty()
             }
+            if (!item.nostrAuthorPubkey.isNullOrBlank() && NostrSignerStore.load() != null) {
+                binding.tvReply.visible()
+            } else {
+                binding.tvReply.gone()
+            }
             val hasText = binding.tvContent.text?.isNotBlank() == true
             binding.tvContent.visibility = if (hasText) View.VISIBLE else View.GONE
             binding.tvContent.textSize = if (item.isReply) 14f else 16f
@@ -1165,6 +1255,72 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
                 val audioUrl = item.audioUrl ?: return@setOnClickListener
                 toggleAudioPlayback(audioUrl)
+            }
+            binding.tvReply.setOnClickListener {
+                val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
+                if (item.itemType != TYPE_MORE) showNostrReplyEditor(item)
+            }
+            binding.llLikeArea.setOnClickListener {
+                val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
+                if (item.itemType != TYPE_MORE && !item.id.isNullOrBlank() &&
+                    !item.nostrAuthorPubkey.isNullOrBlank() && NostrSignerStore.load() != null
+                ) {
+                    publishNostrReaction(item.id, item.nostrAuthorPubkey)
+                }
+            }
+        }
+
+        private fun showNostrReplyEditor(item: ReviewUiItem) {
+            val parentId = item.id?.takeIf { it.isNotBlank() } ?: return
+            val parentAuthor = item.nostrAuthorPubkey?.takeIf { it.isNotBlank() } ?: return
+            val rootId = item.nostrRootExcerptId?.takeIf { it.isNotBlank() } ?: return
+            val rootAuthor = item.nostrRootExcerptPubkey?.takeIf { it.isNotBlank() } ?: return
+            val editBinding = io.legado.app.databinding.DialogEditTextBinding.inflate(layoutInflater).apply {
+                editView.hint = getString(R.string.nostr_comment_hint)
+                editView.minLines = 3
+                editView.maxLines = 8
+                editView.setSingleLine(false)
+            }
+            requireContext().alert(getString(R.string.nostr_comment_reply)) {
+                customView { editBinding.root }
+                positiveButton(getString(R.string.nostr_comment_publish)) {
+                    val content = editBinding.editView.text?.toString().orEmpty().trim()
+                    if (content.isBlank()) return@positiveButton
+                    lifecycleScope.launch {
+                        runCatching {
+                            val book = ReadBook.book ?: error("No book is open")
+                            withContext(IO) {
+                                NostrReviewPublisher.replyToComment(
+                                    book = book,
+                                    rootExcerptId = rootId,
+                                    rootExcerptPubkey = rootAuthor,
+                                    parentCommentId = parentId,
+                                    parentAuthorPubkey = parentAuthor,
+                                    content = content
+                                )
+                            }
+                        }.onSuccess {
+                            loadDetailPage(paragraphNum, 1, append = false)
+                        }.onFailure {
+                            context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
+                        }
+                    }
+                }
+                cancelButton()
+            }
+        }
+
+        private fun publishNostrReaction(commentId: String, authorPubkey: String) {
+            lifecycleScope.launch {
+                runCatching {
+                    withContext(IO) {
+                        NostrReviewPublisher.reactToComment(commentId, authorPubkey)
+                    }
+                }.onSuccess {
+                    loadDetailPage(paragraphNum, 1, append = false)
+                }.onFailure {
+                    context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
+                }
             }
         }
 

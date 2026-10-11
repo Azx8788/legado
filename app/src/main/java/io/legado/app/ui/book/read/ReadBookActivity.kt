@@ -62,6 +62,7 @@ import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.motion.MotionTokens
 import io.legado.app.help.nostr.NostrReviewClient
+import io.legado.app.help.nostr.NostrSignerStore
 import io.legado.app.constant.AppPattern
 import io.legado.app.help.source.getSourceType
 import io.legado.app.help.storage.Backup
@@ -1761,7 +1762,15 @@ class ReadBookActivity : BaseReadBookActivity(),
     override fun onReviewClick(paragraphNum: Int, count: Int) {
         // -1 identifies the chapter title; 0 is the only invalid paragraph id.
         if (paragraphNum == 0) return
-        if (count <= 0) {
+        if (count < 0) {
+            if (AppConfig.nostrReviewEnabled) {
+                showDialogFragment(ReviewDetailDialog(paragraphNum, 0))
+            } else {
+                toastOnUi("暂无段评")
+            }
+            return
+        }
+        if (count == 0) {
             toastOnUi("暂无段评")
             return
         }
@@ -1952,7 +1961,12 @@ class ReadBookActivity : BaseReadBookActivity(),
             val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, chapterIndex)
                 ?: return@async null
             if (chapter.isVolume) return@async null
-            NostrReviewClient.loadSummary(book, chapter.url, paragraphs)
+            NostrReviewClient.loadSummary(
+                book,
+                chapter.url,
+                paragraphs,
+                allowCreatingComments = NostrSignerStore.load() != null
+            )
         }.onSuccess(Main) { summary ->
             synchronized(nostrReviewSummaryLoadingKeys) {
                 nostrReviewSummaryLoadingKeys.remove(key)
@@ -2053,7 +2067,14 @@ class ReadBookActivity : BaseReadBookActivity(),
             result.counts
         } else {
             (result.counts.keys + nostrResult.counts.keys).associateWith { paragraphIndex ->
-                (result.counts[paragraphIndex] ?: 0) + (nostrResult.counts[paragraphIndex] ?: 0)
+                val sourceCount = result.counts[paragraphIndex] ?: 0
+                val nostrCount = nostrResult.counts[paragraphIndex]
+                when {
+                    nostrCount == null -> sourceCount
+                    nostrCount < 0 && sourceCount > 0 -> sourceCount
+                    nostrCount < 0 -> nostrCount
+                    else -> sourceCount + nostrCount
+                }
             }
         }
         val keys = result.keys

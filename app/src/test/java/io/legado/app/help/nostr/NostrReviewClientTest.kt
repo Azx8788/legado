@@ -5,6 +5,8 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Test
+import java.util.Base64
+import java.net.URLEncoder
 
 class NostrReviewClientTest {
 
@@ -98,4 +100,135 @@ class NostrReviewClientTest {
 
         assertFalse(isValid)
     }
+
+    @Test
+    fun nip44V2MatchesOfficialConversationAndEncryptionVector() {
+        val clientSecret = ("00".repeat(31) + "01").hexToBytes()
+        val signerSecret = ("00".repeat(31) + "02").hexToBytes()
+        val signerPublic = fr.acinq.secp256k1.Secp256k1.pubkeyCreate(signerSecret)
+            .copyOfRange(1, 33)
+        val expectedConversationKey =
+            "c41c775356fd92eadc63ff5a0dc1da211b268cbea22316767095b2871ea1412d".hexToBytes()
+        val nonce = ByteArray(32).also { it[31] = 1 }
+        val expectedPayload =
+            "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABee0G5VSK0/9YypIObAtDKfYEAjD35uVkHyB0F4DwrcNaCXlCWZKaArsGrY6M9wnuTMxWfp1RTN9Xga8no+kF5Vsb"
+
+        val conversationKey = NostrNip44.conversationKey(clientSecret, signerPublic)
+
+        assertEquals(expectedConversationKey.toList(), conversationKey.toList())
+        assertEquals(
+            expectedPayload,
+            NostrNip44.encrypt("a".toByteArray(), conversationKey, nonce)
+        )
+        assertEquals("a", NostrNip44.decrypt(expectedPayload, conversationKey))
+    }
+
+    @Test
+    fun nip44RejectsTamperedPayload() {
+        val conversationKey = ByteArray(32)
+        val payload = NostrNip44.encrypt("hello", conversationKey)
+        val decoded = Base64.getDecoder().decode(payload)
+        decoded[40] = (decoded[40].toInt() xor 1).toByte()
+
+        val failure = runCatching {
+            NostrNip44.decrypt(Base64.getEncoder().encodeToString(decoded), conversationKey)
+        }
+
+        assertTrue(failure.isFailure)
+    }
+
+    @Test
+    fun bunkerUriParsesRepeatedRelaysAndSecret() {
+        val signerPubkey = "ab".repeat(32)
+        val firstRelay = URLEncoder.encode("wss://relay.example", Charsets.UTF_8.name())
+        val secondRelay = URLEncoder.encode("wss://relay2.example", Charsets.UTF_8.name())
+        val uri = "bunker://$signerPubkey?relay=$firstRelay&relay=$secondRelay&secret=single-use"
+
+        val connection = NostrNip46.parseBunkerUri(uri)
+
+        assertEquals(signerPubkey, connection.signerPubkey)
+        assertEquals(listOf("wss://relay.example", "wss://relay2.example"), connection.relays)
+        assertEquals("single-use", connection.secret)
+    }
+
+    @Test
+    fun nip46PermissionsLimitSigningToParagraphReviewKinds() {
+        assertEquals(
+            "get_public_key,sign_event:9802,sign_event:1111,sign_event:7",
+            NostrNip46.paragraphReviewPermissions
+        )
+    }
+
+    @Test
+    fun nostrConnectTokenRequestsOnlyParagraphReviewPermissions() {
+        val clientSecret = ("00".repeat(31) + "01").hexToBytes()
+        val clientPublic = fr.acinq.secp256k1.Secp256k1.pubkeyCreate(clientSecret)
+            .copyOfRange(1, 33)
+            .joinToString("") { "%02x".format(it) }
+
+        val token = NostrNip46.createNostrConnectToken(
+            NostrNip46.ClientKeyPair(clientSecret, clientPublic),
+            listOf("wss://relay.example")
+        )
+
+        assertTrue(token.uri.startsWith("nostrconnect://$clientPublic?"))
+        assertTrue(token.uri.contains("perms=get_public_key%2Csign_event%3A9802"))
+        assertTrue(token.uri.contains("secret=${token.secret}"))
+    }
+
+    @Test
+    fun nip46ConnectRequestIsSignedAndEncryptedForTheBunker() {
+        val clientSecret = ("00".repeat(31) + "01").hexToBytes()
+        val signerSecret = ("00".repeat(31) + "02").hexToBytes()
+        val clientPublic = fr.acinq.secp256k1.Secp256k1.pubkeyCreate(clientSecret)
+            .copyOfRange(1, 33)
+        val signerPublic = fr.acinq.secp256k1.Secp256k1.pubkeyCreate(signerSecret)
+            .copyOfRange(1, 33)
+        val connection = NostrNip46.BunkerConnection(
+            signerPubkey = signerPublic.joinToString("") { "%02x".format(it) },
+            relays = listOf("wss://relay.example"),
+            secret = "once"
+        )
+
+        val request = NostrNip46.buildConnectRequest(
+            NostrNip46.ClientKeyPair(clientSecret, clientPublic.joinToString("") { "%02x".format(it) }),
+            connection,
+            createdAt = 100
+        )
+        val event = request.event
+        val tags = listOf(listOf("p", connection.signerPubkey))
+        assertTrue(
+            NostrReviewClient.verifyEvent(
+                id = event.getString("id"),
+                pubkey = event.getString("pubkey"),
+                createdAt = event.getLong("created_at"),
+                kind = event.getInt("kind"),
+                tags = tags,
+                content = event.getString("content"),
+                signature = event.getString("sig")
+            )
+        )
+
+        val sharedKey = NostrNip44.conversationKey(clientSecret, signerPublic)
+        val rpc = org.json.JSONObject(NostrNip44.decrypt(event.getString("content"), sharedKey))
+        val params = rpc.getJSONArray("params")
+        assertEquals("connect", rpc.getString("method"))
+        assertEquals(connection.signerPubkey, params.getString(0))
+        assertEquals("once", params.getString(1))
+        assertEquals(NostrNip46.paragraphReviewPermissions, params.getString(2))
+    }
+
+    @Test
+    fun nip46SignEventRequestRejectsKindsOutsideParagraphReviews() {
+        val keyPair = NostrNip46.ClientKeyPair(ByteArray(32), "00".repeat(32))
+        val unsignedEvent = org.json.JSONObject().put("kind", 1)
+
+        val failure = runCatching {
+            NostrNip46.buildSignEventRequest(keyPair, "11".repeat(32), unsignedEvent)
+        }
+
+        assertTrue(failure.isFailure)
+    }
+
+    private fun String.hexToBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 }

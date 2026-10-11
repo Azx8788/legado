@@ -259,6 +259,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.secp256k1.kmp)
     implementation(libs.secp256k1.kmp.jni.android)
+    implementation(libs.bouncycastle.provider)
     implementation(libs.brotli.dec)
     implementation(fileTree(dir: 'cronetlib', include: ['*.jar', '*.aar']))
     implementation(libs.protobuf.javalite)

@@ -1166,7 +1166,11 @@ object ChapterProvider {
     }
 
     fun getReviewCountText(count: Int): String {
-        return if (count > 999) "999" else count.toString()
+        return when {
+            count < 0 -> ""
+            count > 999 -> "999"
+            else -> count.toString()
+        }
     }
 
     fun clearReviewIconCache() {

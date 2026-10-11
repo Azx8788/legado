@@ -6,8 +6,11 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
 import androidx.core.view.postDelayed
 import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.lifecycleScope
 import androidx.preference.ListPreference
 import androidx.preference.Preference
 import com.jeremyliao.liveeventbus.LiveEventBus
@@ -19,6 +22,10 @@ import io.legado.app.help.AppFreezeMonitor
 import io.legado.app.help.DispatchersMonitor
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
+import io.legado.app.help.nostr.NostrNip46
+import io.legado.app.help.nostr.NostrNip46Transport
+import io.legado.app.help.nostr.NostrSignerStore
+import io.legado.app.utils.QRCodeUtils
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.prefs.fragment.PreferenceFragment
 import io.legado.app.lib.theme.primaryColor
@@ -40,6 +47,10 @@ import io.legado.app.utils.sendToClip
 import io.legado.app.utils.setEdgeEffectColor
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.toastOnUi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import splitties.init.appCtx
 
 /**
@@ -79,6 +90,7 @@ class OtherConfigFragment : PreferenceFragment(),
         upPreferenceSummary(PreferKey.bitmapCacheSize, AppConfig.bitmapCacheSize.toString())
         upPreferenceSummary(PreferKey.imageRetainNum, AppConfig.imageRetainNum.toString())
         upPreferenceSummary(PreferKey.sourceEditMaxLine, AppConfig.sourceEditMaxLine.toString())
+        updateNostrSignerSummary()
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -151,6 +163,9 @@ class OtherConfigFragment : PreferenceFragment(),
                 )
                 toastOnUi(getString(R.string.mcp_token_regenerated))
             }
+
+            "nostrSigner" -> manageNostrSigner()
+            "nostrConnectQr" -> startNostrConnect()
 
             PreferKey.cleanCache -> clearCache()
             PreferKey.uploadRule -> showDialogFragment<DirectLinkUploadConfig>()
@@ -308,6 +323,196 @@ class OtherConfigFragment : PreferenceFragment(),
                 }
             }
             cancelButton()
+        }
+    }
+
+    private fun manageNostrSigner() {
+        val session = NostrSignerStore.load()
+        if (session != null) {
+            alert(getString(R.string.nostr_signer_connected)) {
+                setMessage(session.userPubkey)
+                okButton(getString(R.string.nostr_signer_disconnect)) {
+                    NostrSignerStore.clear()
+                    updateNostrSignerSummary()
+                    toastOnUi(getString(R.string.nostr_signer_disconnected))
+                }
+                cancelButton()
+            }
+            return
+        }
+        alert(getString(R.string.nostr_signer_connect)) {
+            val editBinding = DialogEditTextBinding.inflate(layoutInflater).apply {
+                editView.hint = "bunker://..."
+                editView.setSingleLine(true)
+            }
+            customView { editBinding.root }
+            okButton(getString(R.string.nostr_signer_connect)) {
+                connectNostrSigner(editBinding.editView.text?.toString().orEmpty())
+            }
+            cancelButton()
+        }
+    }
+
+    private fun connectNostrSigner(bunkerUri: String) {
+        val connection = runCatching { NostrNip46.parseBunkerUri(bunkerUri) }
+            .getOrElse {
+                toastOnUi(it.localizedMessage ?: getString(R.string.nostr_signer_invalid_uri))
+                return
+            }
+        val keyPair = NostrNip46.newClientKeyPair()
+        toastOnUi(getString(R.string.nostr_signer_connecting))
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val connectResponse = NostrNip46Transport.request(
+                        connection,
+                        keyPair,
+                        NostrNip46.buildConnectRequest(keyPair, connection)
+                    )
+                    if (connectResponse.error != null) error(connectResponse.error)
+                    if (connection.secret != null && connectResponse.result != "ack" &&
+                        connectResponse.result != connection.secret
+                    ) error("Remote signer did not confirm the bunker secret")
+
+                    val publicKeyResponse = NostrNip46Transport.request(
+                        connection,
+                        keyPair,
+                        NostrNip46.buildGetPublicKeyRequest(keyPair, connection.signerPubkey)
+                    )
+                    if (publicKeyResponse.error != null) error(publicKeyResponse.error)
+                    val userPubkey = publicKeyResponse.result.orEmpty().lowercase()
+                    require(userPubkey.length == 64 && userPubkey.all { it.digitToIntOrNull(16) != null }) {
+                        "Remote signer returned an invalid user public key"
+                    }
+
+                    val relayResponse = runCatching {
+                        NostrNip46Transport.request(
+                            connection,
+                            keyPair,
+                            NostrNip46.buildSwitchRelaysRequest(keyPair, connection.signerPubkey)
+                        ).result
+                    }.getOrNull()
+                    val relays = relayResponse?.let { value ->
+                        runCatching { org.json.JSONArray(value) }.getOrNull()?.let { array ->
+                            (0 until array.length()).map { array.getString(it) }
+                        }
+                    }?.filter { it.startsWith("wss://", ignoreCase = true) }
+                        ?.takeIf { it.isNotEmpty() } ?: connection.relays
+
+                    NostrSignerStore.save(
+                        NostrSignerStore.Session(
+                            bunkerUri = bunkerUri,
+                            clientPrivateKey = keyPair.privateKey,
+                            clientPublicKey = keyPair.publicKey,
+                            signerPubkey = connection.signerPubkey,
+                            userPubkey = userPubkey,
+                            relays = relays
+                        )
+                    )
+                    userPubkey
+                }
+            }
+            result.onSuccess {
+                updateNostrSignerSummary()
+                toastOnUi(getString(R.string.nostr_signer_connected))
+            }.onFailure {
+                toastOnUi(it.localizedMessage ?: getString(R.string.nostr_signer_failed))
+            }
+        }
+    }
+
+    private fun updateNostrSignerSummary() {
+        val preference = findPreference<Preference>("nostrSigner") ?: return
+        preference.summary = NostrSignerStore.load()?.userPubkey
+            ?: getString(R.string.nostr_signer_not_connected)
+    }
+
+    private fun startNostrConnect() {
+        if (NostrSignerStore.load() != null) {
+            toastOnUi(getString(R.string.nostr_signer_connected))
+            return
+        }
+        val keyPair = NostrNip46.newClientKeyPair()
+        val token = NostrNip46.createNostrConnectToken(
+            keyPair,
+            listOf("wss://relay.damus.io", "wss://nos.lol")
+        )
+        val bitmap = QRCodeUtils.createQRCode(token.uri, 720)
+        if (bitmap == null) {
+            toastOnUi(getString(R.string.nostr_signer_failed))
+            return
+        }
+        val image = ImageView(requireContext()).apply {
+            setImageBitmap(bitmap)
+            adjustViewBounds = true
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        var connectionJob: Job? = null
+        val dialog = alert(getString(R.string.nostr_signer_pair_qr)) {
+            setMessage(getString(R.string.nostr_signer_scan_qr))
+            setCancelable(false)
+            customView { image }
+            cancelButton { connectionJob?.cancel() }
+        }
+        connectionJob = viewLifecycleOwner.lifecycleScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val approval = NostrNip46Transport.awaitNostrConnect(
+                        token.relays,
+                        keyPair,
+                        token.secret
+                    )
+                    val connection = NostrNip46.BunkerConnection(
+                        signerPubkey = approval.signerPubkey,
+                        relays = token.relays,
+                        secret = null
+                    )
+                    val publicKeyResponse = NostrNip46Transport.request(
+                        connection,
+                        keyPair,
+                        NostrNip46.buildGetPublicKeyRequest(keyPair, approval.signerPubkey)
+                    )
+                    if (publicKeyResponse.error != null) error(publicKeyResponse.error)
+                    val userPubkey = publicKeyResponse.result.orEmpty().lowercase()
+                    require(userPubkey.length == 64 && userPubkey.all { it.digitToIntOrNull(16) != null }) {
+                        "Remote signer returned an invalid user public key"
+                    }
+                    val relays = runCatching {
+                        NostrNip46Transport.request(
+                            connection,
+                            keyPair,
+                            NostrNip46.buildSwitchRelaysRequest(keyPair, approval.signerPubkey)
+                        ).result
+                    }.getOrNull()?.let { value ->
+                        runCatching { org.json.JSONArray(value) }.getOrNull()?.let { array ->
+                            (0 until array.length()).map { array.getString(it) }
+                        }
+                    }?.filter { it.startsWith("wss://", ignoreCase = true) }
+                        ?.takeIf { it.isNotEmpty() } ?: token.relays
+                    NostrSignerStore.save(
+                        NostrSignerStore.Session(
+                            bunkerUri = token.uri,
+                            clientPrivateKey = keyPair.privateKey,
+                            clientPublicKey = keyPair.publicKey,
+                            signerPubkey = approval.signerPubkey,
+                            userPubkey = userPubkey,
+                            relays = relays
+                        )
+                    )
+                    userPubkey
+                }
+            }
+            result.onSuccess {
+                dialog.dismiss()
+                updateNostrSignerSummary()
+                toastOnUi(getString(R.string.nostr_signer_connected))
+            }.onFailure {
+                dialog.dismiss()
+                toastOnUi(it.localizedMessage ?: getString(R.string.nostr_signer_failed))
+            }
         }
     }
 

@@ -27,18 +27,28 @@ import kotlin.coroutines.resumeWithException
 
 object NostrReviewClient {
 
-    private val relays = listOf(
+    private val defaultRelays = listOf(
         "wss://relay.damus.io",
         "wss://nos.lol"
     )
+
+    private fun relays(): List<String> = NostrSignerStore.load()?.relays
+        ?.filter { it.startsWith("wss://", ignoreCase = true) }
+        ?.distinct()
+        ?.takeIf { it.isNotEmpty() }
+        ?: defaultRelays
 
     data class Summary(val counts: Map<Int, Int>)
 
     data class Comment(
         val id: String,
         val name: String,
+        val authorPubkey: String,
+        val rootExcerptId: String,
+        val rootExcerptPubkey: String,
         val content: String,
         val time: String,
+        val likeCount: Int,
         val replies: List<Comment>
     )
 
@@ -50,7 +60,8 @@ object NostrReviewClient {
     suspend fun loadSummary(
         book: Book,
         chapterUrl: String,
-        paragraphs: List<String>
+        paragraphs: List<String>,
+        allowCreatingComments: Boolean = false
     ): Summary {
         if (paragraphs.isEmpty()) return Summary(emptyMap())
         val bookTag = bookIdentifier(book.name, book.author)
@@ -62,15 +73,33 @@ object NostrReviewClient {
         )
             val matched = matchParagraphs(excerpts, paragraphs, chapterUrl)
         val excerptIds = matched.values.flatten().map { it.id }.distinct()
-        if (excerptIds.isEmpty()) return Summary(emptyMap())
+        if (excerptIds.isEmpty()) {
+            val writableParagraphs = if (allowCreatingComments) {
+                paragraphs.mapIndexedNotNull { index, paragraph ->
+                    if (paragraph.isNotBlank()) index + 1 to -1 else null
+                }.toMap()
+            } else {
+                emptyMap()
+            }
+            return Summary(writableParagraphs)
+        }
 
         val comments = queryComments(excerptIds)
         val commentCounts = comments.groupingBy { it.rootId }.eachCount()
         val counts = matched.mapNotNull { (paragraphIndex, events) ->
             val count = events.sumOf { commentCounts[it.id] ?: 0 }
-            if (count > 0) paragraphIndex to count else null
+            when {
+                count > 0 -> paragraphIndex to count
+                allowCreatingComments -> paragraphIndex to -1
+                else -> null
+            }
         }.toMap()
-        return Summary(counts)
+        if (!allowCreatingComments) return Summary(counts)
+        val visibleCounts = counts.toMutableMap()
+        paragraphs.forEachIndexed { index, paragraph ->
+            if (paragraph.isNotBlank()) visibleCounts.putIfAbsent(index + 1, -1)
+        }
+        return Summary(visibleCounts)
     }
 
     suspend fun loadDetails(
@@ -93,14 +122,23 @@ object NostrReviewClient {
         if (matching.isEmpty()) return Details(emptyList(), false)
         val excerptIds = matching.map { it.id }.distinct()
         val comments = queryComments(excerptIds)
+        val reactions = queryReactions(comments.map { it.id })
+        val likeCounts = reactions.filter { it.content == "+" }
+            .groupBy { it.tagValues("e").firstOrNull().orEmpty() }
+            .mapValues { (_, events) -> events.distinctBy { it.pubkey }.size }
         val commentsByExcerpt = comments.groupBy { it.rootId }
+        val excerptAuthors = matching.associate { it.id to it.pubkey }
         val roots = excerptIds.flatMap { excerptId ->
-            buildThread(commentsByExcerpt[excerptId].orEmpty(), excerptId)
+            buildThread(
+                commentsByExcerpt[excerptId].orEmpty(),
+                excerptId,
+                excerptAuthors[excerptId].orEmpty()
+            )
         }.sortedByDescending { it.createdAt }
         val pageSize = 20
         val pageItems = roots.drop((page - 1).coerceAtLeast(0) * pageSize).take(pageSize)
         return Details(
-            items = pageItems.map { it.toComment() },
+            items = pageItems.map { it.toComment(likeCounts) },
             hasMore = roots.size > page.coerceAtLeast(1) * pageSize
         )
     }
@@ -177,11 +215,23 @@ object NostrReviewClient {
         }.distinctBy { it.id }
     }
 
+    private suspend fun queryReactions(commentIds: List<String>): List<NostrEvent> {
+        return commentIds.distinct().chunked(50).flatMap { batch ->
+            queryEvents(
+                JSONObject()
+                    .put("kinds", JSONArray().put(7))
+                    .put("#e", JSONArray(batch))
+                    .put("limit", 1000)
+            )
+        }.distinctBy { it.id }
+    }
+
     private suspend fun queryEvents(filter: JSONObject): List<NostrEvent> = coroutineScope {
+        val activeRelays = relays()
         val expectedKinds = filter.optJSONArray("kinds")?.let { kinds ->
             (0 until kinds.length()).map { kinds.optInt(it) }.toSet()
         }.orEmpty()
-        val results = relays.map { relay ->
+        val results = activeRelays.map { relay ->
             async(Dispatchers.IO) {
                 runCatching { queryRelay(relay, filter) }
             }
@@ -254,7 +304,11 @@ object NostrReviewClient {
             }
         }
 
-    private fun buildThread(events: List<NostrEvent>, excerptId: String): List<NostrEvent> {
+    private fun buildThread(
+        events: List<NostrEvent>,
+        excerptId: String,
+        excerptAuthor: String
+    ): List<NostrEvent> {
         val byParent = events.groupBy { event ->
             event.tagValues("e").lastOrNull() ?: event.rootId
         }
@@ -263,17 +317,26 @@ object NostrReviewClient {
             if (depth >= 5) return emptyList()
             return byParent[parentId].orEmpty()
                 .sortedBy { it.createdAt }
-                .map { it.copy(children = children(it.id, depth + 1)) }
+                .map {
+                    it.copy(
+                        children = children(it.id, depth + 1),
+                        rootExcerptPubkey = excerptAuthor
+                    )
+                }
         }
         return children(excerptId, 0).filter { it.id in eventIds }
     }
 
-    private fun NostrEvent.toComment(): Comment = Comment(
+    private fun NostrEvent.toComment(likeCounts: Map<String, Int>): Comment = Comment(
         id = id,
         name = pubkey.take(12).ifBlank { "Nostr" },
+        authorPubkey = pubkey,
+        rootExcerptId = rootId,
+        rootExcerptPubkey = rootExcerptPubkey ?: tagValues("P").firstOrNull().orEmpty(),
         content = content,
         time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(createdAt * 1000)),
-        replies = children.map { it.toComment() }
+        likeCount = likeCounts[id] ?: 0,
+        replies = children.map { it.toComment(likeCounts) }
     )
 
     private fun normalize(value: String): String = value
@@ -332,7 +395,8 @@ object NostrReviewClient {
         val createdAt: Long,
         val kind: Int,
         val tags: List<List<String>>,
-        val children: List<NostrEvent> = emptyList()
+        val children: List<NostrEvent> = emptyList(),
+        val rootExcerptPubkey: String? = null
     ) {
         val rootId: String get() = tagValues("E").firstOrNull().orEmpty()
 
@@ -345,7 +409,8 @@ object NostrReviewClient {
                 val id = json.optString("id").takeIf { it.isNotBlank() } ?: return null
                 val pubkey = json.optString("pubkey").takeIf { it.isNotBlank() } ?: return null
                 val createdAt = json.optLong("created_at", -1).takeIf { it >= 0 } ?: return null
-                val kind = json.optInt("kind", -1).takeIf { it == 9802 || it == 1111 } ?: return null
+                val kind = json.optInt("kind", -1)
+                    .takeIf { it == 7 || it == 9802 || it == 1111 || it == 24133 } ?: return null
                 val content = json.optString("content")
                 val signature = json.optString("sig").takeIf { it.isNotBlank() } ?: return null
                 val tags = json.optJSONArray("tags") ?: JSONArray()

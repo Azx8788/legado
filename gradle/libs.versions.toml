@@ -26,6 +26,7 @@ media = "1.7.1"
 nanoHttpd = "2.3.1"
 okhttp = "5.3.2"
 secp256k1 = "0.22.0"
+bouncycastle = "1.79"
 brotli = "0.1.2"
 preference = "1.2.1"
 quickChineseTransfer = "0.2.16"
@@ -135,6 +136,7 @@ preference-ktx = { module = "androidx.preference:preference-ktx", version.ref = 
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 secp256k1-kmp = { module = "fr.acinq.secp256k1:secp256k1-kmp", version.ref = "secp256k1" }
 secp256k1-kmp-jni-android = { module = "fr.acinq.secp256k1:secp256k1-kmp-jni-android", version.ref = "secp256k1" }
+bouncycastle-provider = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 brotli-dec = { module = "org.brotli:dec", version.ref = "brotli" }
 protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobufJavalite" }
 
