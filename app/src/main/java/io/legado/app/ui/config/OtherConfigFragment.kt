@@ -53,6 +53,7 @@ import io.legado.app.utils.sendToClip
 import io.legado.app.utils.setEdgeEffectColor
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.toastOnUi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -431,7 +432,7 @@ class OtherConfigFragment : PreferenceFragment(),
                     )
                     userPubkey
                 }
-            }
+            }.onFailure { if (it is CancellationException) throw it }
             result.onSuccess {
                 updateNostrSignerSummary()
                 // 登录成功后让阅读页重新统计段评,以便给无评论的段落显示可首评图标。
@@ -505,7 +506,7 @@ class OtherConfigFragment : PreferenceFragment(),
                         }
                     }
                 }
-            }
+            }.onFailure { if (it is CancellationException) throw it }
             result.onSuccess { relays ->
                 dialog.dismiss()
                 updateNostrRelaysSummary()
@@ -650,7 +651,7 @@ class OtherConfigFragment : PreferenceFragment(),
                     )
                     userPubkey
                 }
-            }
+            }.onFailure { if (it is CancellationException) throw it }
             result.onSuccess {
                 dialog.dismiss()
                 updateNostrSignerSummary()
