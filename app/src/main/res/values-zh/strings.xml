@@ -1279,6 +1279,12 @@ Cron 使用 5 个字段：**分 时 日 月 周**
     <string name="nostr_signer_failed">无法连接 Nostr 签名器</string>
     <string name="nostr_signer_pair_qr">通过二维码配对签名器</string>
     <string name="nostr_signer_scan_qr">使用远程签名器扫描此二维码</string>
+    <string name="nostr_signer_qr_copy_hint">使用远程签名器扫描此二维码，或点击二维码复制配对链接</string>
+    <string name="nostr_relays">Nostr 中继</string>
+    <string name="nostr_relays_summary">当前：%1$s</string>
+    <string name="nostr_relays_empty">未配置</string>
+    <string name="nostr_relays_hint">wss://relay.example.com\n每行一个中继地址</string>
+    <string name="nostr_relays_missing">请先在「Nostr 中继」中填写中继地址</string>
     <string name="nostr_comment_write">撰写 Nostr 段评</string>
     <string name="nostr_comment_reply">回复</string>
     <string name="nostr_comment_hint">输入段落评论</string>

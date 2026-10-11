@@ -45,6 +45,7 @@ object PreferKey {
     const val recordLog = "recordLog"
     const val recordHttpLog = "recordHttpLog"
     const val nostrReview = "nostrReview"
+    const val nostrRelays = "nostrRelays"
     const val processText = "process_text"
     const val cleanCache = "cleanCache"
     const val saveTabPosition = "saveTabPosition"

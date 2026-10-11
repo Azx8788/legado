@@ -1345,6 +1345,12 @@ Placeholders:
     <string name="nostr_signer_failed">Unable to connect to Nostr signer</string>
     <string name="nostr_signer_pair_qr">Pair with signer QR code</string>
     <string name="nostr_signer_scan_qr">Scan this code with your remote signer</string>
+    <string name="nostr_signer_qr_copy_hint">Scan this code with your remote signer, or tap the code to copy the pairing link</string>
+    <string name="nostr_relays">Nostr relays</string>
+    <string name="nostr_relays_summary">Current: %1$s</string>
+    <string name="nostr_relays_empty">not configured</string>
+    <string name="nostr_relays_hint">wss://relay.example.com\nOne relay per line</string>
+    <string name="nostr_relays_missing">Configure relays under \"Nostr relays\" first</string>
     <string name="nostr_comment_write">Write Nostr comment</string>
     <string name="nostr_comment_reply">Reply</string>
     <string name="nostr_comment_hint">Write a paragraph comment</string>

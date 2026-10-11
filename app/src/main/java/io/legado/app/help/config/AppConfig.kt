@@ -3,6 +3,7 @@ package io.legado.app.help.config
 import android.content.SharedPreferences
 import android.os.Build
 import io.legado.app.BuildConfig
+import io.legado.app.R
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.PreferKey
 import io.legado.app.constant.sysElevation
@@ -417,6 +418,21 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
         set(value) {
             appCtx.putPrefString(PreferKey.mcpToken, value)
         }
+
+    /**
+     * 用户配置的 Nostr 中继（每行一个）。仅在 bunker:// 未自带中继的场景使用，
+     * 例如生成配对二维码、读取公开段评。
+     */
+    var nostrRelays: String
+        get() = appCtx.getPrefString(PreferKey.nostrRelays)
+            ?: defaultNostrRelays
+        set(value) {
+            appCtx.putPrefString(PreferKey.nostrRelays, value)
+        }
+
+    val defaultNostrRelays: String
+        get() = appCtx.resources.getStringArray(R.array.nostr_default_relays)
+            .joinToString("\n")
 
     var tocUiUseReplace: Boolean
         get() = appCtx.getPrefBoolean(PreferKey.tocUiUseReplace)

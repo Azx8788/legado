@@ -7,6 +7,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
@@ -27,6 +28,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.nostr.NostrNip46
 import io.legado.app.help.nostr.NostrNip46Transport
+import io.legado.app.help.nostr.NostrRelays
 import io.legado.app.help.nostr.NostrSignerStore
 import io.legado.app.utils.QRCodeUtils
 import io.legado.app.lib.dialogs.alert
@@ -94,6 +96,7 @@ class OtherConfigFragment : PreferenceFragment(),
         upPreferenceSummary(PreferKey.imageRetainNum, AppConfig.imageRetainNum.toString())
         upPreferenceSummary(PreferKey.sourceEditMaxLine, AppConfig.sourceEditMaxLine.toString())
         updateNostrSignerSummary()
+        updateNostrRelaysSummary()
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -168,6 +171,7 @@ class OtherConfigFragment : PreferenceFragment(),
             }
 
             "nostrSigner" -> manageNostrSigner()
+            "nostrRelays" -> showNostrRelaysDialog()
             "nostrConnectQr" -> startNostrConnect()
 
             PreferKey.cleanCache -> clearCache()
@@ -437,6 +441,33 @@ class OtherConfigFragment : PreferenceFragment(),
             ?: getString(R.string.nostr_signer_not_connected)
     }
 
+    private fun updateNostrRelaysSummary() {
+        val preference = findPreference<Preference>("nostrRelays") ?: return
+        val relays = NostrRelays.configured()
+        preference.summary = if (relays.isEmpty()) {
+            getString(R.string.nostr_relays_summary, getString(R.string.nostr_relays_empty))
+        } else {
+            getString(R.string.nostr_relays_summary, relays.joinToString(" "))
+        }
+    }
+
+    private fun showNostrRelaysDialog() {
+        alert(getString(R.string.nostr_relays)) {
+            val editBinding = DialogEditTextBinding.inflate(layoutInflater).apply {
+                editView.hint = getString(R.string.nostr_relays_hint)
+                editView.inputType = InputType.TYPE_CLASS_TEXT or
+                        InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                editView.setText(AppConfig.nostrRelays)
+            }
+            customView { editBinding.root }
+            okButton {
+                AppConfig.nostrRelays = editBinding.editView.text?.toString().orEmpty()
+                updateNostrRelaysSummary()
+            }
+            cancelButton()
+        }
+    }
+
     private fun showNostrAuthUrl(url: String) {
         activity?.runOnUiThread {
             if (!isAdded) return@runOnUiThread
@@ -463,10 +494,13 @@ class OtherConfigFragment : PreferenceFragment(),
             return
         }
         val keyPair = NostrNip46.newClientKeyPair()
-        val token = NostrNip46.createNostrConnectToken(
-            keyPair,
-            listOf("wss://relay.primal.net", "wss://nos.lol")
-        )
+        // 配对二维码里的中继必须由用户配置：签名器只会向这些中继回传结果。
+        val relays = NostrRelays.configured()
+        if (relays.isEmpty()) {
+            toastOnUi(getString(R.string.nostr_relays_missing))
+            return
+        }
+        val token = NostrNip46.createNostrConnectToken(keyPair, relays)
         val bitmap = QRCodeUtils.createQRCode(token.uri, 720)
         if (bitmap == null) {
             toastOnUi(getString(R.string.nostr_signer_failed))
@@ -475,14 +509,17 @@ class OtherConfigFragment : PreferenceFragment(),
         val image = ImageView(requireContext()).apply {
             setImageBitmap(bitmap)
             adjustViewBounds = true
+            contentDescription = getString(R.string.nostr_signer_scan_qr)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
+            // 部分签名器无法生成二维码时，用户可以手动粘贴配对链接。
+            setOnClickListener { requireContext().sendToClip(token.uri) }
         }
         var connectionJob: Job? = null
         val dialog = alert(getString(R.string.nostr_signer_pair_qr)) {
-            setMessage(getString(R.string.nostr_signer_scan_qr))
+            setMessage(getString(R.string.nostr_signer_qr_copy_hint))
             setCancelable(false)
             customView { image }
             cancelButton { connectionJob?.cancel() }

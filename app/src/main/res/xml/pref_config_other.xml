@@ -64,6 +64,10 @@
             android:title="@string/nostr_signer" />
 
         <io.legado.app.lib.prefs.Preference
+            android:key="nostrRelays"
+            android:title="@string/nostr_relays" />
+
+        <io.legado.app.lib.prefs.Preference
             android:key="nostrConnectQr"
             android:title="@string/nostr_signer_pair_qr" />
     </io.legado.app.lib.prefs.PreferenceCategory>

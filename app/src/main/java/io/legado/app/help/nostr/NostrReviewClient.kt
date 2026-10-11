@@ -26,16 +26,7 @@ import kotlin.coroutines.resumeWithException
 
 object NostrReviewClient {
 
-    private val defaultRelays = listOf(
-        "wss://relay.damus.io",
-        "wss://nos.lol"
-    )
-
-    private fun relays(): List<String> = NostrSignerStore.load()?.relays
-        ?.filter { it.startsWith("wss://", ignoreCase = true) }
-        ?.distinct()
-        ?.takeIf { it.isNotEmpty() }
-        ?: defaultRelays
+    private fun relays(): List<String> = NostrRelays.forReading()
 
     data class Summary(val counts: Map<Int, Int>)
 
