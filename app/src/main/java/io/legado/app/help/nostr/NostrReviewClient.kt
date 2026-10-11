@@ -1,7 +1,6 @@
 package io.legado.app.help.nostr
 
 import io.legado.app.data.entities.Book
-import io.legado.app.help.http.okHttpClient
 import fr.acinq.secp256k1.Secp256k1
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -252,7 +251,7 @@ object NostrReviewClient {
                 val events = mutableListOf<NostrEvent>()
                 val finished = AtomicBoolean(false)
                 lateinit var socket: WebSocket
-                socket = okHttpClient.newWebSocket(
+                socket = nostrWebSocketClient.newWebSocket(
                     Request.Builder().url(relay).build(),
                     object : WebSocketListener() {
                         override fun onOpen(webSocket: WebSocket, response: Response) {

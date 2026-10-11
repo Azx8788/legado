@@ -1,5 +1,6 @@
 package io.legado.app.help.nostr
 
+import io.legado.app.constant.AppLog
 import io.legado.app.help.http.okHttpClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -19,6 +20,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+internal val nostrWebSocketClient by lazy {
+    okHttpClient.newBuilder().apply {
+        interceptors().clear()
+        networkInterceptors().clear()
+    }.build()
+}
 
 object NostrNip46Transport {
 
@@ -49,7 +57,7 @@ object NostrNip46Transport {
         suspendCancellableCoroutine { continuation ->
             val completed = AtomicBoolean(false)
             lateinit var socket: WebSocket
-            socket = okHttpClient.newWebSocket(
+            socket = nostrWebSocketClient.newWebSocket(
                 Request.Builder().url(relay).build(),
                 object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -117,7 +125,7 @@ object NostrNip46Transport {
             validRelays.forEach { relay ->
                 if (completed.get()) return@forEach
                 val subscriptionId = UUID.randomUUID().toString().replace("-", "")
-                val socket = okHttpClient.newWebSocket(
+                val socket = nostrWebSocketClient.newWebSocket(
                     Request.Builder().url(relay).build(),
                     object : WebSocketListener() {
                         override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -210,7 +218,7 @@ object NostrNip46Transport {
             connection.relays.forEach { relay ->
                 if (completed.get()) return@forEach
                 val subscriptionId = UUID.randomUUID().toString().replace("-", "")
-                val socket = okHttpClient.newWebSocket(
+                val socket = nostrWebSocketClient.newWebSocket(
                     Request.Builder().url(relay).build(),
                     object : WebSocketListener() {
                         override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -244,15 +252,28 @@ object NostrNip46Transport {
                                     closeSockets(1000, "response received")
                                     continuation.resume(result)
                                 }
+                            }.onFailure {
+                                AppLog.put(
+                                    "NIP-46 response from ${relayHost(relay)} was rejected",
+                                    it,
+                                    tag = "Nostr"
+                                )
                             }
                         }
 
                         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                            if (!completed.get()) failRelay(t)
+                            if (!completed.get()) {
+                                AppLog.put("NIP-46 relay ${relayHost(relay)} failed", t, tag = "Nostr")
+                                failRelay(t)
+                            }
                         }
 
                         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                             if (!completed.get()) {
+                                AppLog.put(
+                                    "NIP-46 relay ${relayHost(relay)} closed before responding: $code $reason",
+                                    tag = "Nostr"
+                                )
                                 failRelay(IllegalStateException("NIP-46 relay closed before responding: $relay"))
                             }
                         }
@@ -267,4 +288,7 @@ object NostrNip46Transport {
             }
         }
     }
+
+    private fun relayHost(relay: String): String =
+        runCatching { java.net.URI(relay).host }.getOrNull() ?: "unknown relay"
 }

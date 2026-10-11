@@ -420,6 +420,7 @@ class OtherConfigFragment : PreferenceFragment(),
                 updateNostrSignerSummary()
                 toastOnUi(getString(R.string.nostr_signer_connected))
             }.onFailure {
+                AppLog.put("Nostr signer connection failed", it, tag = "Nostr")
                 toastOnUi(it.localizedMessage ?: getString(R.string.nostr_signer_failed))
             }
         }
