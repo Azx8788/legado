@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePaddingRelative
 import androidx.lifecycle.lifecycleScope
@@ -22,8 +23,11 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.appcompat.widget.AppCompatImageButton
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.flexbox.FlexboxLayout
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
 import io.legado.app.constant.AppLog
@@ -257,11 +261,18 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             editView.maxLines = 8
             editView.setSingleLine(false)
         }
-        requireContext().alert(getString(R.string.nostr_comment_write)) {
-            customView { editBinding.root }
-            positiveButton(getString(R.string.nostr_comment_publish)) {
+
+        val dialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(getString(R.string.nostr_comment_write))
+            .setView(editBinding.root)
+            .setPositiveButton(getString(R.string.nostr_comment_publish), null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val comment = editBinding.editView.text?.toString().orEmpty().trim()
-                if (comment.isBlank()) return@positiveButton
+                if (comment.isBlank()) return@setOnClickListener
                 binding.rotateLoading.visible()
                 lifecycleScope.launch {
                     runCatching {
@@ -283,15 +294,18 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         }
                     }.onSuccess {
                         binding.rotateLoading.gone()
+                        dialog.dismiss()
                         loadDetailPage(paragraphNum, 1, append = false)
                     }.onFailure {
                         binding.rotateLoading.gone()
+                        dialog.dismiss()
                         context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
                     }
                 }
             }
-            cancelButton()
         }
+
+        dialog.show()
     }
 
     private fun setupDragHandle() {

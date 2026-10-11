@@ -19,7 +19,7 @@ import kotlin.coroutines.resumeWithException
 object NostrNip46Transport {
 
     suspend fun publish(relays: List<String>, event: JSONObject, timeoutMillis: Long = 15_000) {
-        val validRelays = relays.distinct().filter { it.startsWith("wss://", true) }
+        val validRelays = relays.distinct().filter { relay -> relay.startsWith("wss://", true) }
         require(validRelays.isNotEmpty()) { "No valid Relay available for publishing" }
         val eventId = event.optString("id").takeIf { it.isNotBlank() }
             ?: throw IllegalArgumentException("Cannot publish an unsigned event")
@@ -30,8 +30,8 @@ object NostrNip46Transport {
                 }
             }.awaitAll()
         }
-        if (results.none { it.getOrDefault(false) }) {
-            throw results.firstNotNullOfOrNull { it.exceptionOrNull() }
+        if (results.none { result -> result.getOrDefault(false) }) {
+            throw results.firstNotNullOfOrNull { result -> result.exceptionOrNull() }
                 ?: IllegalStateException("No Relay accepted the Nostr event")
         }
     }
