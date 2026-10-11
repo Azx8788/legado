@@ -1285,6 +1285,14 @@ Cron 使用 5 个字段：**分 时 日 月 周**
     <string name="nostr_relays_empty">未配置</string>
     <string name="nostr_relays_hint">wss://relay.example.com\n每行一个中继地址</string>
     <string name="nostr_relays_missing">请先在「Nostr 中继」中填写中继地址</string>
+    <string name="nostr_relays_discover">自动发现可用中继</string>
+    <string name="nostr_relays_discover_summary">逐个进行 NIP-11 探测与 WebSocket 健康检查，过滤不可用中继</string>
+    <string name="nostr_relays_discovering">正在检测中继 %1$d/%2$d\n%3$s</string>
+    <string name="nostr_relays_discover_result">发现 %1$d 个可用中继</string>
+    <string name="nostr_relays_discover_none">未发现任何可用中继</string>
+    <string name="nostr_relays_discover_failed">中继检测失败：%1$s</string>
+    <string name="nostr_relays_cached">缓存：%1$d 个可用中继</string>
+    <string name="nostr_relays_last_check">上次检测：%1$s</string>
     <string name="nostr_comment_write">撰写 Nostr 段评</string>
     <string name="nostr_comment_reply">回复</string>
     <string name="nostr_comment_hint">输入段落评论</string>

@@ -65,7 +65,13 @@
 
         <io.legado.app.lib.prefs.Preference
             android:key="nostrRelays"
+            android:summary="@string/nostr_relays_empty"
             android:title="@string/nostr_relays" />
+
+        <io.legado.app.lib.prefs.Preference
+            android:key="nostrRelayDiscover"
+            android:summary="@string/nostr_relays_discover_summary"
+            android:title="@string/nostr_relays_discover" />
 
         <io.legado.app.lib.prefs.Preference
             android:key="nostrConnectQr"

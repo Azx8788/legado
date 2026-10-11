@@ -384,9 +384,6 @@ object NostrNip46Transport {
         val error = relayErrors[relay] ?: return "${relayHost(relay)}: no response"
         return "${relayHost(relay)}: $error"
     }
-
-    private fun relayHost(relay: String): String =
-        runCatching { java.net.URI(relay).host }.getOrNull() ?: "unknown relay"
 }
 
 /**

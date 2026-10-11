@@ -1351,6 +1351,14 @@ Placeholders:
     <string name="nostr_relays_empty">not configured</string>
     <string name="nostr_relays_hint">wss://relay.example.com\nOne relay per line</string>
     <string name="nostr_relays_missing">Configure relays under \"Nostr relays\" first</string>
+    <string name="nostr_relays_discover">Discover usable relays</string>
+    <string name="nostr_relays_discover_summary">Probe each relay via NIP-11 and a WebSocket health check, filtering out unusable ones</string>
+    <string name="nostr_relays_discovering">Checking relay %1$d/%2$d\n%3$s</string>
+    <string name="nostr_relays_discover_result">Found %1$d usable relays</string>
+    <string name="nostr_relays_discover_none">No usable relay found</string>
+    <string name="nostr_relays_discover_failed">Relay check failed: %1$s</string>
+    <string name="nostr_relays_cached">Cached: %1$d usable relays</string>
+    <string name="nostr_relays_last_check">Last checked: %1$s</string>
     <string name="nostr_comment_write">Write Nostr comment</string>
     <string name="nostr_comment_reply">Reply</string>
     <string name="nostr_comment_hint">Write a paragraph comment</string>

@@ -11,6 +11,7 @@ import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
+import androidx.appcompat.app.AlertDialog
 import androidx.core.view.postDelayed
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
@@ -57,6 +58,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import splitties.init.appCtx
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 其它设置
@@ -172,6 +176,7 @@ class OtherConfigFragment : PreferenceFragment(),
 
             "nostrSigner" -> manageNostrSigner()
             "nostrRelays" -> showNostrRelaysDialog()
+            "nostrRelayDiscover" -> discoverNostrRelays()
             "nostrConnectQr" -> startNostrConnect()
 
             PreferKey.cleanCache -> clearCache()
@@ -443,11 +448,80 @@ class OtherConfigFragment : PreferenceFragment(),
 
     private fun updateNostrRelaysSummary() {
         val preference = findPreference<Preference>("nostrRelays") ?: return
-        val relays = NostrRelays.configured()
-        preference.summary = if (relays.isEmpty()) {
-            getString(R.string.nostr_relays_summary, getString(R.string.nostr_relays_empty))
+        val relays = NostrRelays.effective()
+        val current = if (relays.isEmpty()) {
+            getString(R.string.nostr_relays_empty)
         } else {
-            getString(R.string.nostr_relays_summary, relays.joinToString(" "))
+            relays.joinToString(" ")
+        }
+        val builder = StringBuilder(getString(R.string.nostr_relays_summary, current))
+        val cached = NostrRelays.cached()
+        if (cached.isNotEmpty()) {
+            builder.append('\n')
+                .append(getString(R.string.nostr_relays_cached, cached.size))
+            val time = NostrRelays.cacheTime
+            if (time > 0) {
+                builder.append('\n')
+                    .append(
+                        getString(
+                            R.string.nostr_relays_last_check,
+                            SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                                .format(Date(time))
+                        )
+                    )
+            }
+        }
+        preference.summary = builder.toString()
+    }
+
+    /**
+     * 对「用户配置 + 内置种子」的中继逐个做 NIP-11 + WebSocket 健康检查，
+     * 过滤掉要求鉴权/付费/禁止写入或连不上的中继，把可用结果写回设置与缓存。
+     */
+    private fun discoverNostrRelays() {
+        var job: Job? = null
+        val dialog = alert(
+            getString(R.string.nostr_relays_discover),
+            getString(R.string.nostr_relays_discover_summary)
+        ) {
+            setCancelable(false)
+            negativeButton(R.string.cancel) { job?.cancel() }
+        }
+        job = viewLifecycleOwner.lifecycleScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    NostrRelays.discover { done, total, relay ->
+                        val message = getString(
+                            R.string.nostr_relays_discovering, done, total, relay
+                        )
+                        activity?.runOnUiThread {
+                            if (isAdded && dialog.isShowing) {
+                                dialog.setMessage(message)
+                            }
+                        }
+                    }
+                }
+            }
+            result.onSuccess { relays ->
+                dialog.dismiss()
+                updateNostrRelaysSummary()
+                toastOnUi(
+                    if (relays.isEmpty()) {
+                        getString(R.string.nostr_relays_discover_none)
+                    } else {
+                        getString(R.string.nostr_relays_discover_result, relays.size)
+                    }
+                )
+            }.onFailure {
+                AppLog.put("Nostr relay discovery failed", it, tag = "Nostr")
+                dialog.dismiss()
+                toastOnUi(
+                    getString(
+                        R.string.nostr_relays_discover_failed,
+                        it.localizedMessage.orEmpty()
+                    )
+                )
+            }
         }
     }
 
@@ -494,8 +568,8 @@ class OtherConfigFragment : PreferenceFragment(),
             return
         }
         val keyPair = NostrNip46.newClientKeyPair()
-        // 配对二维码里的中继必须由用户配置：签名器只会向这些中继回传结果。
-        val relays = NostrRelays.configured()
+        // 配对二维码里的中继必须由用户配置或自动发现：签名器只会向这些中继回传结果。
+        val relays = NostrRelays.effective()
         if (relays.isEmpty()) {
             toastOnUi(getString(R.string.nostr_relays_missing))
             return

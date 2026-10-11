@@ -424,15 +424,33 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
      * 例如生成配对二维码、读取公开段评。
      */
     var nostrRelays: String
-        get() = appCtx.getPrefString(PreferKey.nostrRelays)
-            ?: defaultNostrRelays
+        get() = appCtx.getPrefString(PreferKey.nostrRelays) ?: seedNostrRelays
         set(value) {
             appCtx.putPrefString(PreferKey.nostrRelays, value)
         }
 
-    val defaultNostrRelays: String
-        get() = appCtx.resources.getStringArray(R.array.nostr_default_relays)
+    /** 出厂种子中继，供自动发现使用。 */
+    val seedNostrRelays: String
+        get() = appCtx.resources.getStringArray(R.array.nostr_seed_relays)
             .joinToString("\n")
+
+    /** 用户显式配置的中继，不做种子回退；为空表示还没配置过。 */
+    val nostrRelaysConfigured: String
+        get() = appCtx.getPrefString(PreferKey.nostrRelays).orEmpty()
+
+    /** 健康检查通过的中继（每行一个）。 */
+    var nostrRelayCache: String
+        get() = appCtx.getPrefString(PreferKey.nostrRelayCache).orEmpty()
+        set(value) {
+            appCtx.putPrefString(PreferKey.nostrRelayCache, value)
+        }
+
+    /** 上次健康检查时间戳，0 表示从未检测过。 */
+    var nostrRelayCacheTime: Long
+        get() = appCtx.getPrefLong(PreferKey.nostrRelayCacheTime)
+        set(value) {
+            appCtx.putPrefLong(PreferKey.nostrRelayCacheTime, value)
+        }
 
     var tocUiUseReplace: Boolean
         get() = appCtx.getPrefBoolean(PreferKey.tocUiUseReplace)
