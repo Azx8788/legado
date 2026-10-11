@@ -24,7 +24,7 @@ import io.legado.app.data.entities.migrateTo
 
 class AudioPlayViewModel(application: Application) : BaseViewModel(application) {
     val titleData = MutableLiveData<String>()
-    val coverData = MutableLiveData<String>()
+    val coverData = MutableLiveData<String?>()
     val customBtnData = MutableLiveData<Boolean>()
 
     fun initData(intent: Intent) = AudioPlay.apply {
