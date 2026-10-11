@@ -2078,17 +2078,22 @@ class ReadBookActivity : BaseReadBookActivity(),
             }
         }
         val keys = result.keys
-        ChapterProvider.setReviewProviders(
-            countProvider = { targetChapterIndex, reviewId ->
-                if (targetChapterIndex != chapterIndex) 0 else counts[reviewId] ?: 0
-            },
-            keyProvider = { targetChapterIndex, reviewId ->
-                if (targetChapterIndex != chapterIndex) null else keys[reviewId]
-            }
-        )
-        reviewSummaryAppliedKey = key
-        // 段评列刷新只需要重绘当前阅读视图，避免重新走 curPageChanged() 打断朗读位置。
-        binding.readView.upContent(relativePosition = 0, resetPageOffset = false)
+        // applyReviewSummary 可能直接由 ReadBook 的 IO 协程(contentLoadFinish)调用，
+        // 而 setReviewProviders / upContent 会更新排版列并刷新视图，必须在主线程执行，
+        // 否则会抛出 CalledFromWrongThreadException(Only the original thread ... can touch its views)。
+        runOnUiThread {
+            ChapterProvider.setReviewProviders(
+                countProvider = { targetChapterIndex, reviewId ->
+                    if (targetChapterIndex != chapterIndex) 0 else counts[reviewId] ?: 0
+                },
+                keyProvider = { targetChapterIndex, reviewId ->
+                    if (targetChapterIndex != chapterIndex) null else keys[reviewId]
+                }
+            )
+            reviewSummaryAppliedKey = key
+            // 段评列刷新只需要重绘当前阅读视图，避免重新走 curPageChanged() 打断朗读位置。
+            binding.readView.upContent(relativePosition = 0, resetPageOffset = false)
+        }
     }
 
     private fun prefetchAdjacentReviewSummary(
