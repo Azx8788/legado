@@ -346,7 +346,7 @@ class OtherConfigFragment : PreferenceFragment(),
                 editView.setSingleLine(true)
             }
             customView { editBinding.root }
-            okButton(getString(R.string.nostr_signer_connect)) {
+            positiveButton(getString(R.string.nostr_signer_connect)) {
                 connectNostrSigner(editBinding.editView.text?.toString().orEmpty())
             }
             cancelButton()

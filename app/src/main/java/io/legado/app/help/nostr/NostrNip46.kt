@@ -215,7 +215,7 @@ object NostrNip46 {
         val content = NostrNip44.encrypt(plaintext, conversationKey)
         val tags = listOf(listOf("p", signerPubkey))
         val id = eventId(keyPair.publicKey, createdAt, 24133, tags, content)
-        val signature = Secp256k1.signSchnorr(id.hexToByteArray(), keyPair.privateKey, null).toHex()
+        val signature = Secp256k1.signSchnorr(id, keyPair.privateKey, null).toHex()
         val event = JSONObject()
             .put("id", id)
             .put("pubkey", keyPair.publicKey)
