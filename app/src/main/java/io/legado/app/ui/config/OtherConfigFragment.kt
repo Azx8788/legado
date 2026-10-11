@@ -359,7 +359,11 @@ class OtherConfigFragment : PreferenceFragment(),
                 toastOnUi(it.localizedMessage ?: getString(R.string.nostr_signer_invalid_uri))
                 return
             }
-        val keyPair = NostrNip46.newClientKeyPair()
+        val keyPair = runCatching { NostrNip46.newClientKeyPair() }
+            .getOrElse {
+                toastOnUi(getString(R.string.nostr_signer_failed))
+                return
+            }
         toastOnUi(getString(R.string.nostr_signer_connecting))
         viewLifecycleOwner.lifecycleScope.launch {
             val result = runCatching {

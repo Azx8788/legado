@@ -67,6 +67,8 @@
 # crypto/MD5Utils 迁入 shared commonMain 后失去 @Keep, JS 反射按名调用其方法, 等价保留
 -keep class io.legado.app.help.crypto.** { *; }
 -keep class io.legado.app.utils.MD5Utils { *; }
+# JNI 符号按 Java 包名/方法名静态导出,不可被 R8 混淆或改写
+-keep class fr.acinq.secp256k1.** { *; }
 # CacheManager 迁入 shared commonMain 后失去 @Keep, AnalyzeRule 以 bindings["cache"] 暴露给 JS 反射调用, 等价保留
 -keep class io.legado.app.help.CacheManager { *; }
 -keep class io.legado.app.help.CacheManager$* { *; }
