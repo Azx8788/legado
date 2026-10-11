@@ -193,7 +193,8 @@ object NostrNip46Transport {
         connection: NostrNip46.BunkerConnection,
         keyPair: NostrNip46.ClientKeyPair,
         request: NostrNip46.RpcRequest,
-        timeoutMillis: Long = 90_000
+        timeoutMillis: Long = 90_000,
+        onAuthUrl: ((String) -> Unit)? = null
     ): NostrNip46.RpcResponse = withTimeout(timeoutMillis) {
         suspendCancellableCoroutine { continuation ->
             val completed = AtomicBoolean(false)
@@ -201,6 +202,7 @@ object NostrNip46Transport {
             val sockets = CopyOnWriteArrayList<WebSocket>()
             val expectedAuthor = connection.signerPubkey
             val eventJson = request.event.toString()
+            val authUrlShown = AtomicBoolean(false)
 
             fun closeSockets(code: Int, reason: String) {
                 sockets.forEach { it.close(code, reason) }
@@ -248,6 +250,14 @@ object NostrNip46Transport {
                                     signerPubkey = expectedAuthor,
                                     expectedRequestId = request.id
                                 )
+                                if (result.result == "auth_url" && onAuthUrl != null) {
+                                    val authUrl = result.error
+                                        ?: throw IllegalArgumentException("NIP-46 auth_url response has no URL")
+                                    if (authUrlShown.compareAndSet(false, true)) {
+                                        onAuthUrl(authUrl)
+                                    }
+                                    return@runCatching
+                                }
                                 if (completed.compareAndSet(false, true)) {
                                     closeSockets(1000, "response received")
                                     continuation.resume(result)

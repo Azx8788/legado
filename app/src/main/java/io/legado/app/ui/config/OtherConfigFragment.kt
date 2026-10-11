@@ -2,6 +2,8 @@ package io.legado.app.ui.config
 
 import android.annotation.SuppressLint
 import android.content.ComponentName
+import android.content.Intent
+import android.net.Uri
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -371,7 +373,8 @@ class OtherConfigFragment : PreferenceFragment(),
                     val connectResponse = NostrNip46Transport.request(
                         connection,
                         keyPair,
-                        NostrNip46.buildConnectRequest(keyPair, connection)
+                        NostrNip46.buildConnectRequest(keyPair, connection),
+                        onAuthUrl = ::showNostrAuthUrl
                     )
                     if (connectResponse.error != null) error(connectResponse.error)
                     if (connection.secret != null && connectResponse.result != "ack" &&
@@ -381,7 +384,8 @@ class OtherConfigFragment : PreferenceFragment(),
                     val publicKeyResponse = NostrNip46Transport.request(
                         connection,
                         keyPair,
-                        NostrNip46.buildGetPublicKeyRequest(keyPair, connection.signerPubkey)
+                        NostrNip46.buildGetPublicKeyRequest(keyPair, connection.signerPubkey),
+                        onAuthUrl = ::showNostrAuthUrl
                     )
                     if (publicKeyResponse.error != null) error(publicKeyResponse.error)
                     val userPubkey = publicKeyResponse.result.orEmpty().lowercase()
@@ -430,6 +434,26 @@ class OtherConfigFragment : PreferenceFragment(),
         val preference = findPreference<Preference>("nostrSigner") ?: return
         preference.summary = NostrSignerStore.load()?.userPubkey
             ?: getString(R.string.nostr_signer_not_connected)
+    }
+
+    private fun showNostrAuthUrl(url: String) {
+        activity?.runOnUiThread {
+            if (!isAdded) return@runOnUiThread
+            val uri = Uri.parse(url)
+            if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
+                AppLog.put("Nostr signer returned an invalid authorization URL", tag = "Nostr")
+                return@runOnUiThread
+            }
+            alert(getString(R.string.nostr_signer_connecting), url) {
+                positiveButton(R.string.open_in_browser) {
+                    runCatching {
+                        startActivity(Intent(Intent.ACTION_VIEW, uri))
+                    }.onFailure {
+                        AppLog.put("Unable to open Nostr signer authorization URL", it, tag = "Nostr")
+                    }
+                }
+            }
+        }
     }
 
     private fun startNostrConnect() {
