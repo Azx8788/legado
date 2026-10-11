@@ -331,7 +331,7 @@ class OtherConfigFragment : PreferenceFragment(),
         if (session != null) {
             alert(getString(R.string.nostr_signer_connected)) {
                 setMessage(session.userPubkey)
-                okButton(getString(R.string.nostr_signer_disconnect)) {
+                positiveButton(getString(R.string.nostr_signer_disconnect)) {
                     NostrSignerStore.clear()
                     updateNostrSignerSummary()
                     toastOnUi(getString(R.string.nostr_signer_disconnected))

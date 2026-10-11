@@ -1295,11 +1295,17 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 editView.maxLines = 8
                 editView.setSingleLine(false)
             }
-            requireContext().alert(getString(R.string.nostr_comment_reply)) {
-                customView { editBinding.root }
-                positiveButton(getString(R.string.nostr_comment_publish)) {
+            val dialog = MaterialAlertDialogBuilder(requireContext())
+                .setTitle(getString(R.string.nostr_comment_reply))
+                .setView(editBinding.root)
+                .setPositiveButton(getString(R.string.nostr_comment_publish), null)
+                .setNegativeButton(android.R.string.cancel, null)
+                .create()
+
+            dialog.setOnShowListener {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                     val content = editBinding.editView.text?.toString().orEmpty().trim()
-                    if (content.isBlank()) return@positiveButton
+                    if (content.isBlank()) return@setOnClickListener
                     lifecycleScope.launch {
                         runCatching {
                             val book = ReadBook.book ?: error("No book is open")
@@ -1314,14 +1320,17 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                                 )
                             }
                         }.onSuccess {
+                            dialog.dismiss()
                             loadDetailPage(paragraphNum, 1, append = false)
                         }.onFailure {
+                            dialog.dismiss()
                             context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
                         }
                     }
                 }
-                cancelButton()
             }
+
+            dialog.show()
         }
 
         private fun publishNostrReaction(commentId: String, authorPubkey: String) {

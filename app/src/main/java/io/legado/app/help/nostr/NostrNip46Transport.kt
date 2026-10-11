@@ -1,6 +1,10 @@
 package io.legado.app.help.nostr
 
 import io.legado.app.help.http.okHttpClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import okhttp3.Request
@@ -23,9 +27,9 @@ object NostrNip46Transport {
         require(validRelays.isNotEmpty()) { "No valid Relay available for publishing" }
         val eventId = event.optString("id").takeIf { it.isNotBlank() }
             ?: throw IllegalArgumentException("Cannot publish an unsigned event")
-        val results = kotlinx.coroutines.coroutineScope {
+        val results = coroutineScope {
             validRelays.map { relay ->
-                kotlinx.coroutines.async(kotlinx.coroutines.Dispatchers.IO) {
+                async(Dispatchers.IO) {
                     runCatching { publishToRelay(relay, event, eventId, timeoutMillis) }
                 }
             }.awaitAll()
