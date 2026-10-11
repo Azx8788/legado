@@ -1,3 +1,5 @@
+@file:JvmName("AppMapExtensionsKt")
+
 package io.legado.app.utils
 
 fun HashMap<String, *>.has(key: String, ignoreCase: Boolean = false): Boolean {
