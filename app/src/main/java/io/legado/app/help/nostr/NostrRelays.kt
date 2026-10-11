@@ -37,7 +37,7 @@ object NostrRelays {
 
     /** 读取公开事件时使用：已连接签名器则沿用会话中继，否则用本地中继。 */
     fun forReading(): List<String> = NostrSignerStore.load()?.relays
-        ?.let(::parse)
+        ?.let(::sanitize)
         ?.takeIf { it.isNotEmpty() }
         ?: effective()
 
@@ -86,8 +86,12 @@ object NostrRelays {
     }
 
     /** 支持每行一个，也兼容逗号/分号/空格分隔。 */
-    private fun parse(value: String): List<String> = value
-        .split('\n', ',', ';', ' ')
+    private fun parse(value: String): List<String> = sanitize(
+        value.split('\n', ',', ';', ' ')
+    )
+
+    /** 归一化中继列表：去空白，只保留 wss://，并去重。 */
+    private fun sanitize(values: List<String>): List<String> = values
         .map(String::trim)
         .filter { it.startsWith("wss://", ignoreCase = true) }
         .distinct()
