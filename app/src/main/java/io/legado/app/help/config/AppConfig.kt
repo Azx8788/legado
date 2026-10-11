@@ -452,6 +452,13 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
             appCtx.putPrefLong(PreferKey.nostrRelayCacheTime, value)
         }
 
+    /** 已应用到的出厂种子中继版本，用于把旧版本写入配置的失效默认中继替换掉。 */
+    var nostrRelaySeedVersion: Int
+        get() = appCtx.getPrefInt(PreferKey.nostrRelaySeedVersion)
+        set(value) {
+            appCtx.putPrefInt(PreferKey.nostrRelaySeedVersion, value)
+        }
+
     var tocUiUseReplace: Boolean
         get() = appCtx.getPrefBoolean(PreferKey.tocUiUseReplace)
         set(value) {
