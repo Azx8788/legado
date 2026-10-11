@@ -465,7 +465,7 @@ class OtherConfigFragment : PreferenceFragment(),
         val keyPair = NostrNip46.newClientKeyPair()
         val token = NostrNip46.createNostrConnectToken(
             keyPair,
-            listOf("wss://relay.damus.io", "wss://nos.lol")
+            listOf("wss://relay.primal.net", "wss://nos.lol")
         )
         val bitmap = QRCodeUtils.createQRCode(token.uri, 720)
         if (bitmap == null) {
@@ -503,7 +503,8 @@ class OtherConfigFragment : PreferenceFragment(),
                     val publicKeyResponse = NostrNip46Transport.request(
                         connection,
                         keyPair,
-                        NostrNip46.buildGetPublicKeyRequest(keyPair, approval.signerPubkey)
+                        NostrNip46.buildGetPublicKeyRequest(keyPair, approval.signerPubkey),
+                        onAuthUrl = ::showNostrAuthUrl
                     )
                     if (publicKeyResponse.error != null) error(publicKeyResponse.error)
                     val userPubkey = publicKeyResponse.result.orEmpty().lowercase()
@@ -540,6 +541,7 @@ class OtherConfigFragment : PreferenceFragment(),
                 updateNostrSignerSummary()
                 toastOnUi(getString(R.string.nostr_signer_connected))
             }.onFailure {
+                AppLog.put("Nostr signer pairing failed", it, tag = "Nostr")
                 dialog.dismiss()
                 toastOnUi(it.localizedMessage ?: getString(R.string.nostr_signer_failed))
             }

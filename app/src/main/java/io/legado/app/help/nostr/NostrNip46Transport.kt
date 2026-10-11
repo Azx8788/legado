@@ -3,6 +3,7 @@ package io.legado.app.help.nostr
 import io.legado.app.constant.AppLog
 import io.legado.app.help.http.okHttpClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -15,7 +16,9 @@ import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
@@ -25,6 +28,9 @@ internal val nostrWebSocketClient by lazy {
     okHttpClient.newBuilder().apply {
         interceptors().clear()
         networkInterceptors().clear()
+        // Relay 常在空闲时主动断开连接，默认 OkHttp 不发心跳。
+        // NIP-46 等待用户在签名器上确认可能超过一分钟，需要 ping 保活。
+        pingInterval(20, TimeUnit.SECONDS)
     }.build()
 }
 
@@ -116,6 +122,7 @@ object NostrNip46Transport {
             val sockets = CopyOnWriteArrayList<WebSocket>()
             val validRelays = relays.distinct().filter { it.startsWith("wss://", true) }
             require(validRelays.isNotEmpty()) { "No valid Relay available for nostrconnect" }
+            val relayErrors = ConcurrentHashMap<String, String>()
 
             fun closeSockets() {
                 sockets.forEach { it.close(1000, "connection established") }
@@ -135,12 +142,19 @@ object NostrNip46Transport {
                                 .put("since", System.currentTimeMillis() / 1000 - 300)
                             if (!webSocket.send(
                                     JSONArray().put("REQ").put(subscriptionId).put(filter).toString()
-                                ) && failedRelays.incrementAndGet() == validRelays.size &&
-                                completed.compareAndSet(false, true)
-                            ) {
-                                continuation.resumeWithException(
-                                    IllegalStateException("Unable to subscribe to nostrconnect Relay")
                                 )
+                            ) {
+                                relayErrors[relay] = "unable to subscribe"
+                                if (failedRelays.incrementAndGet() == validRelays.size &&
+                                    completed.compareAndSet(false, true)
+                                ) {
+                                    val message = relayFailureMessage(
+                                        "Unable to subscribe on any nostrconnect relay",
+                                        validRelays,
+                                        relayErrors
+                                    )
+                                    continuation.resumeWithException(NostrRelayException(message))
+                                }
                             }
                         }
 
@@ -165,17 +179,38 @@ object NostrNip46Transport {
                         }
 
                         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                            if (completed.get()) return
+                            AppLog.put("nostrconnect relay ${relayHost(relay)} failed", t, tag = "Nostr")
+                            relayErrors[relay] = t.localizedMessage ?: t.toString()
                             if (failedRelays.incrementAndGet() == validRelays.size &&
                                 completed.compareAndSet(false, true)
-                            ) continuation.resumeWithException(t)
+                            ) {
+                                val message = relayFailureMessage(
+                                    "All nostrconnect relays failed",
+                                    validRelays,
+                                    relayErrors
+                                )
+                                continuation.resumeWithException(NostrRelayException(message, t))
+                            }
                         }
 
                         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                            if (!completed.get() && failedRelays.incrementAndGet() == validRelays.size &&
-                                completed.compareAndSet(false, true)
-                            ) continuation.resumeWithException(
-                                IllegalStateException("All nostrconnect Relays closed before approval")
+                            if (completed.get()) return
+                            AppLog.put(
+                                "nostrconnect relay ${relayHost(relay)} closed before approval: $code $reason",
+                                tag = "Nostr"
                             )
+                            relayErrors[relay] = "closed before approval: $code $reason"
+                            if (failedRelays.incrementAndGet() == validRelays.size &&
+                                completed.compareAndSet(false, true)
+                            ) {
+                                val message = relayFailureMessage(
+                                    "All nostrconnect relays closed before approval",
+                                    validRelays,
+                                    relayErrors
+                                )
+                                continuation.resumeWithException(NostrRelayException(message))
+                            }
                         }
                     }
                 )
@@ -195,13 +230,16 @@ object NostrNip46Transport {
         request: NostrNip46.RpcRequest,
         timeoutMillis: Long = 90_000,
         onAuthUrl: ((String) -> Unit)? = null
-    ): NostrNip46.RpcResponse = withTimeout(timeoutMillis) {
+    ): NostrNip46.RpcResponse = withRelayErrorReporting(
+        timeoutMillis = timeoutMillis,
+        relays = connection.relays.distinct().filter { it.startsWith("wss://", true) },
+        failureLabel = "NIP-46 request"
+    ) { relays, relayErrors ->
         suspendCancellableCoroutine { continuation ->
             val completed = AtomicBoolean(false)
             val failedRelays = AtomicInteger(0)
             val sockets = CopyOnWriteArrayList<WebSocket>()
             val expectedAuthor = connection.signerPubkey
-            val eventJson = request.event.toString()
             val authUrlShown = AtomicBoolean(false)
 
             fun closeSockets(code: Int, reason: String) {
@@ -209,15 +247,21 @@ object NostrNip46Transport {
                 sockets.clear()
             }
 
-            fun failRelay(error: Throwable) {
-                if (failedRelays.incrementAndGet() == connection.relays.size &&
+            // 记录每个 relay 的失败原因。原实现只在全部 relay 都失败时才抛出，
+            // 一旦有 relay 连上却不回应，调用就会一直挂到 withTimeout，
+            // 用户最终只看到没有任何信息量的 "Timed out waiting for 90000 ms"。
+            fun failRelay(relay: String, error: Throwable) {
+                relayErrors[relay] = error.localizedMessage ?: error.toString()
+                if (failedRelays.incrementAndGet() == relays.size &&
                     completed.compareAndSet(false, true)
                 ) {
-                    continuation.resumeWithException(error)
+                    val message = relayFailureMessage("All NIP-46 relays failed", relays, relayErrors)
+                    AppLog.put(message, error, tag = "Nostr")
+                    continuation.resumeWithException(NostrRelayException(message, error))
                 }
             }
 
-            connection.relays.forEach { relay ->
+            relays.forEach { relay ->
                 if (completed.get()) return@forEach
                 val subscriptionId = UUID.randomUUID().toString().replace("-", "")
                 val socket = nostrWebSocketClient.newWebSocket(
@@ -232,7 +276,10 @@ object NostrNip46Transport {
                                     JSONArray().put("REQ").put(subscriptionId).put(filter).toString()
                                 ) || !webSocket.send(JSONArray().put("EVENT").put(request.event).toString())
                             ) {
-                                failRelay(IllegalStateException("Unable to send NIP-46 request to $relay"))
+                                failRelay(
+                                    relay,
+                                    IllegalStateException("Unable to send NIP-46 request to $relay")
+                                )
                             }
                         }
 
@@ -274,7 +321,7 @@ object NostrNip46Transport {
                         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                             if (!completed.get()) {
                                 AppLog.put("NIP-46 relay ${relayHost(relay)} failed", t, tag = "Nostr")
-                                failRelay(t)
+                                failRelay(relay, t)
                             }
                         }
 
@@ -284,7 +331,10 @@ object NostrNip46Transport {
                                     "NIP-46 relay ${relayHost(relay)} closed before responding: $code $reason",
                                     tag = "Nostr"
                                 )
-                                failRelay(IllegalStateException("NIP-46 relay closed before responding: $relay"))
+                                failRelay(
+                                    relay,
+                                    IllegalStateException("NIP-46 relay closed before responding: $relay")
+                                )
                             }
                         }
                     }
@@ -299,6 +349,49 @@ object NostrNip46Transport {
         }
     }
 
+    /**
+     * 统一处理 relay 级超时。withTimeout 抛出的 TimeoutCancellationException 不携带任何 relay 信息，
+     * 这里替换成带上每个 relay 具体原因的异常，便于区分是网络、TLS 还是 relay 本身的问题。
+     */
+    private suspend fun <T> withRelayErrorReporting(
+        timeoutMillis: Long,
+        relays: List<String>,
+        failureLabel: String,
+        block: suspend (List<String>, MutableMap<String, String>) -> T
+    ): T {
+        require(relays.isNotEmpty()) { "No valid Relay available for $failureLabel" }
+        val relayErrors = ConcurrentHashMap<String, String>()
+        return try {
+            withTimeout(timeoutMillis) { block(relays, relayErrors) }
+        } catch (e: TimeoutCancellationException) {
+            val message = relayFailureMessage(
+                "$failureLabel timed out after ${timeoutMillis}ms",
+                relays,
+                relayErrors
+            )
+            AppLog.put(message, e, tag = "Nostr")
+            throw NostrRelayException(message, e)
+        }
+    }
+
+    private fun relayFailureMessage(
+        prefix: String,
+        relays: List<String>,
+        relayErrors: Map<String, String>
+    ): String = "$prefix (${relays.joinToString("; ") { describeRelay(it, relayErrors) }})"
+
+    private fun describeRelay(relay: String, relayErrors: Map<String, String>): String {
+        val error = relayErrors[relay] ?: return "${relayHost(relay)}: no response"
+        return "${relayHost(relay)}: $error"
+    }
+
     private fun relayHost(relay: String): String =
         runCatching { java.net.URI(relay).host }.getOrNull() ?: "unknown relay"
 }
+
+/**
+ * NIP-46 relay 层失败：所有 relay 都失败，或等待响应超时。
+ * message 中会带上每个 relay 的具体原因，避免只暴露一个 "Timed out waiting for ... ms"。
+ */
+class NostrRelayException(message: String, cause: Throwable? = null) :
+    IllegalStateException(message, cause)
