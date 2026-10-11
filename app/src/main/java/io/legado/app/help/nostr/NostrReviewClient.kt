@@ -1,0 +1,296 @@
+package io.legado.app.help.nostr
+
+import io.legado.app.data.entities.Book
+import io.legado.app.help.http.okHttpClient
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
+import org.json.JSONArray
+import org.json.JSONObject
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+object NostrReviewClient {
+
+    private val relays = listOf(
+        "wss://relay.damus.io",
+        "wss://nos.lol"
+    )
+
+    data class Summary(val counts: Map<Int, Int>)
+
+    data class Comment(
+        val id: String,
+        val name: String,
+        val content: String,
+        val time: String,
+        val replies: List<Comment>
+    )
+
+    data class Details(
+        val items: List<Comment>,
+        val hasMore: Boolean
+    )
+
+    suspend fun loadSummary(
+        book: Book,
+        chapterUrl: String,
+        paragraphs: List<String>
+    ): Summary {
+        if (paragraphs.isEmpty()) return Summary(emptyMap())
+        val bookTag = bookIdentifier(book.name, book.author)
+        val excerpts = queryEvents(
+            JSONObject()
+                .put("kinds", JSONArray().put(9802))
+                .put("#i", JSONArray().put(bookTag))
+                .put("#r", JSONArray().put(chapterUrl))
+                .put("limit", 1000)
+        )
+        val matched = matchParagraphs(excerpts, paragraphs)
+        val excerptIds = matched.values.flatten().map { it.id }.distinct()
+        if (excerptIds.isEmpty()) return Summary(emptyMap())
+
+        val comments = queryComments(excerptIds)
+        val commentCounts = comments.groupingBy { it.rootId }.eachCount()
+        val counts = matched.mapNotNull { (paragraphIndex, events) ->
+            val count = events.sumOf { commentCounts[it.id] ?: 0 }
+            if (count > 0) paragraphIndex to count else null
+        }.toMap()
+        return Summary(counts)
+    }
+
+    suspend fun loadDetails(
+        book: Book,
+        chapterUrl: String,
+        paragraph: String,
+        page: Int
+    ): Details {
+        if (paragraph.isBlank()) return Details(emptyList(), false)
+        val excerpts = queryEvents(
+            JSONObject()
+                .put("kinds", JSONArray().put(9802))
+                .put("#i", JSONArray().put(bookIdentifier(book.name, book.author)))
+                .put("#r", JSONArray().put(chapterUrl))
+                .put("limit", 1000)
+        )
+        val matching = matchParagraphs(excerpts, listOf(paragraph))[1].orEmpty()
+        if (matching.isEmpty()) return Details(emptyList(), false)
+        val excerptIds = matching.map { it.id }.distinct()
+        val comments = queryComments(excerptIds)
+        val commentsByExcerpt = comments.groupBy { it.rootId }
+        val roots = excerptIds.flatMap { excerptId ->
+            buildThread(commentsByExcerpt[excerptId].orEmpty(), excerptId)
+        }.sortedByDescending { it.createdAt }
+        val pageSize = 20
+        val pageItems = roots.drop((page - 1).coerceAtLeast(0) * pageSize).take(pageSize)
+        return Details(
+            items = pageItems.map { it.toComment() },
+            hasMore = roots.size > page.coerceAtLeast(1) * pageSize
+        )
+    }
+
+    fun bookIdentifier(name: String, author: String): String {
+        val normalizedName = normalize(name).lowercase(Locale.ROOT)
+        val normalizedAuthor = normalize(author).lowercase(Locale.ROOT)
+        return "legado:book:${sha256("v1|$normalizedName|$normalizedAuthor")}" 
+    }
+
+    private fun matchParagraphs(
+        excerpts: List<NostrEvent>,
+        paragraphs: List<String>
+    ): Map<Int, List<NostrEvent>> {
+        val normalizedParagraphs = paragraphs.map(::normalize)
+        val matches = mutableMapOf<Int, MutableList<NostrEvent>>()
+        excerpts.forEach { event ->
+            val content = normalize(event.content)
+            val candidates = normalizedParagraphs.mapIndexedNotNull { index, paragraph ->
+                if (paragraph.isEmpty()) return@mapIndexedNotNull null
+                val paragraphHash = sha256(paragraph)
+                val isMatch = content == paragraph || content == "sha256:$paragraphHash" ||
+                    content == paragraphHash || event.tagValues("t").any {
+                        it == "legado:paragraph:$paragraphHash" || it == paragraphHash
+                    }
+                if (isMatch) index else null
+            }
+            val context = normalize(event.tagValues("context").firstOrNull().orEmpty())
+            val selected = if (candidates.size > 1 && context.isNotEmpty()) {
+                val scores = candidates.associateWith { index ->
+                    var score = 0
+                    normalizedParagraphs.getOrNull(index - 1)?.takeLast(24)
+                        ?.takeIf { it.length >= 8 && context.contains(it) }?.let { score++ }
+                    normalizedParagraphs.getOrNull(index + 1)?.take(24)
+                        ?.takeIf { it.length >= 8 && context.contains(it) }?.let { score++ }
+                    score
+                }
+                val bestScore = scores.values.maxOrNull() ?: 0
+                val best = scores.filterValues { it == bestScore }.keys
+                if (bestScore > 0 && best.size == 1) best else candidates
+            } else {
+                candidates
+            }
+            selected.forEach { index ->
+                matches.getOrPut(index + 1) { mutableListOf() }.add(event)
+            }
+        }
+        return matches
+    }
+
+    private suspend fun queryComments(excerptIds: List<String>): List<NostrEvent> {
+        return excerptIds.distinct().chunked(50).flatMap { batch ->
+            queryEvents(
+                JSONObject()
+                    .put("kinds", JSONArray().put(1111))
+                    .put("#E", JSONArray(batch))
+                    .put("limit", 1000)
+            )
+        }.distinctBy { it.id }
+    }
+
+    private suspend fun queryEvents(filter: JSONObject): List<NostrEvent> = coroutineScope {
+        val results = relays.map { relay ->
+            async(Dispatchers.IO) {
+                runCatching { queryRelay(relay, filter) }
+            }
+        }.awaitAll()
+        val successful = results.filter { it.isSuccess }
+        if (successful.isEmpty()) {
+            throw results.firstOrNull()?.exceptionOrNull() ?: IllegalStateException("Nostr relay unavailable")
+        }
+        successful.flatMap { it.getOrThrow() }.distinctBy { it.id }
+    }
+
+    private suspend fun queryRelay(relay: String, filter: JSONObject): List<NostrEvent> =
+        withTimeout(10_000) {
+            suspendCancellableCoroutine { continuation ->
+                val subscriptionId = UUID.randomUUID().toString().replace("-", "")
+                val events = mutableListOf<NostrEvent>()
+                val finished = AtomicBoolean(false)
+                lateinit var socket: WebSocket
+                socket = okHttpClient.newWebSocket(
+                    Request.Builder().url(relay).build(),
+                    object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: Response) {
+                            webSocket.send(
+                                JSONArray().put("REQ").put(subscriptionId).put(filter).toString()
+                            )
+                        }
+
+                        override fun onMessage(webSocket: WebSocket, text: String) {
+                            runCatching {
+                                val message = JSONArray(text)
+                                when (message.optString(0)) {
+                                    "EVENT" -> if (message.optString(1) == subscriptionId) {
+                                        if (!finished.get()) {
+                                            message.optJSONObject(2)?.let(NostrEvent::fromJson)?.let(events::add)
+                                        }
+                                    }
+
+                                    "EOSE" -> if (message.optString(1) == subscriptionId &&
+                                        finished.compareAndSet(false, true)
+                                    ) {
+                                        webSocket.send(JSONArray().put("CLOSE").put(subscriptionId).toString())
+                                        webSocket.close(1000, "query complete")
+                                        continuation.resume(events.toList())
+                                    }
+
+                                    "NOTICE" -> if (message.optString(1).contains("error", true) &&
+                                        finished.compareAndSet(false, true)
+                                    ) {
+                                        webSocket.close(1000, "relay notice")
+                                        continuation.resumeWithException(
+                                            IllegalStateException(message.optString(1))
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                            if (finished.compareAndSet(false, true)) {
+                                continuation.resumeWithException(t)
+                            }
+                        }
+                    }
+                )
+                continuation.invokeOnCancellation {
+                    if (finished.compareAndSet(false, true)) socket.cancel()
+                }
+            }
+        }
+
+    private fun buildThread(events: List<NostrEvent>, excerptId: String): List<NostrEvent> {
+        val byParent = events.groupBy { event ->
+            event.tagValues("e").lastOrNull() ?: event.rootId
+        }
+        val eventIds = events.mapTo(HashSet()) { it.id }
+        fun children(parentId: String, depth: Int): List<NostrEvent> {
+            if (depth >= 5) return emptyList()
+            return byParent[parentId].orEmpty()
+                .sortedBy { it.createdAt }
+                .map { it.copy(children = children(it.id, depth + 1)) }
+        }
+        return children(excerptId, 0).filter { it.id in eventIds }
+    }
+
+    private fun NostrEvent.toComment(): Comment = Comment(
+        id = id,
+        name = pubkey.take(12).ifBlank { "Nostr" },
+        content = content,
+        time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(createdAt * 1000)),
+        replies = children.map { it.toComment() }
+    )
+
+    private fun normalize(value: String): String = value
+        .replace(Regex("\\s+"), " ")
+        .trim()
+
+    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+
+    private data class NostrEvent(
+        val id: String,
+        val pubkey: String,
+        val content: String,
+        val createdAt: Long,
+        val tags: List<List<String>>,
+        val children: List<NostrEvent> = emptyList()
+    ) {
+        val rootId: String get() = tagValues("E").firstOrNull().orEmpty()
+
+        fun tagValues(name: String): List<String> = tags.mapNotNull { tag ->
+            tag.getOrNull(1)?.takeIf { tag.firstOrNull() == name }
+        }
+
+        companion object {
+            fun fromJson(json: JSONObject): NostrEvent? {
+                val id = json.optString("id").takeIf { it.isNotBlank() } ?: return null
+                val tags = json.optJSONArray("tags") ?: JSONArray()
+                return NostrEvent(
+                    id = id,
+                    pubkey = json.optString("pubkey"),
+                    content = json.optString("content"),
+                    createdAt = json.optLong("created_at"),
+                    tags = (0 until tags.length()).mapNotNull { index ->
+                        val tag = tags.optJSONArray(index) ?: return@mapNotNull null
+                        (0 until tag.length()).map { tag.optString(it) }
+                    }
+                )
+            }
+        }
+    }
+}

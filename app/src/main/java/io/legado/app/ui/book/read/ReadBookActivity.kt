@@ -2,6 +2,7 @@ package io.legado.app.ui.book.read
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -23,6 +24,7 @@ import androidx.core.view.isVisible
 import androidx.core.view.size
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.preference.PreferenceManager
 import io.legado.app.BuildConfig
 import io.legado.app.R
 import io.legado.app.constant.AppConst
@@ -59,6 +61,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.motion.MotionTokens
+import io.legado.app.help.nostr.NostrReviewClient
 import io.legado.app.constant.AppPattern
 import io.legado.app.help.source.getSourceType
 import io.legado.app.help.storage.Backup
@@ -298,7 +301,22 @@ class ReadBookActivity : BaseReadBookActivity(),
             return size > 5
         }
     }
+    private val nostrReviewSummaryCache = object : LinkedHashMap<String, ReviewSummaryResult>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ReviewSummaryResult>): Boolean {
+            return size > 5
+        }
+    }
+    private val nostrReviewSummaryLoadingKeys = HashSet<String>()
     private val reviewSummaryPrefetchingKeys = HashSet<String>()
+    private val nostrReviewPreferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == PreferKey.nostrReview) {
+            if (!AppConfig.nostrReviewEnabled) {
+                reviewSummaryAppliedKey = null
+                ChapterProvider.clearReviewProviders()
+            }
+            loadReviewSummaryIfNeeded()
+        }
+    }
 
     //恢复跳转前进度对话框的交互结果
     private var confirmRestoreProcess: Boolean? = null
@@ -719,6 +737,12 @@ class ReadBookActivity : BaseReadBookActivity(),
         reviewSummaryLoadingKey = null
         synchronized(reviewSummaryCache) {
             reviewSummaryCache.clear()
+        }
+        synchronized(nostrReviewSummaryCache) {
+            nostrReviewSummaryCache.clear()
+        }
+        synchronized(nostrReviewSummaryLoadingKeys) {
+            nostrReviewSummaryLoadingKeys.clear()
         }
         synchronized(reviewSummaryPrefetchingKeys) {
             reviewSummaryPrefetchingKeys.clear()
@@ -1741,24 +1765,35 @@ class ReadBookActivity : BaseReadBookActivity(),
             toastOnUi("暂无段评")
             return
         }
-        val source = ReadBook.bookSource ?: return
-        if (source.isJsSource()) {
+        val source = ReadBook.bookSource
+        if (source == null || source.isJsSource()) {
             showDialogFragment(ReviewDetailDialog(paragraphNum, count))
             return
         }
-        val rule = source.ruleReview ?: run {
-            toastOnUi("未配置段评规则")
-            return
-        }
-        if (rule.reviewDetailUrl.isNullOrBlank()) {
-            toastOnUi("未配置段评详情URL")
-            return
-        }
-        if (rule.detailListRule.isNullOrBlank() || rule.detailContentRule.isNullOrBlank()) {
-            toastOnUi("未配置段评详情规则")
+        val rule = source.ruleReview?.takeIf { it.enabled }
+        if (rule == null || rule.reviewDetailUrl.isNullOrBlank() ||
+            rule.detailListRule.isNullOrBlank() || rule.detailContentRule.isNullOrBlank()
+        ) {
+            if (AppConfig.nostrReviewEnabled) {
+                showDialogFragment(ReviewDetailDialog(paragraphNum, count))
+            } else {
+                toastOnUi("未配置段评规则")
+            }
             return
         }
         showDialogFragment(ReviewDetailDialog(paragraphNum, count))
+    }
+
+    override fun onStart() {
+        super.onStart()
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .registerOnSharedPreferenceChangeListener(nostrReviewPreferenceListener)
+    }
+
+    override fun onStop() {
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .unregisterOnSharedPreferenceChangeListener(nostrReviewPreferenceListener)
+        super.onStop()
     }
 
     /**
@@ -1773,6 +1808,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     private fun loadReviewSummaryIfNeeded() {
+        loadNostrReviewSummaryIfNeeded()
         val source = ReadBook.bookSource ?: run {
             invalidateReviewSummary()
             return
@@ -1873,6 +1909,59 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
     }
 
+    private fun loadNostrReviewSummaryIfNeeded() {
+        if (!AppConfig.nostrReviewEnabled) return
+        val book = ReadBook.book ?: return
+        val chapterIndex = ReadBook.durChapterIndex
+        val textChapter = ReadBook.curTextChapter ?: return
+        if (textChapter.chapter.index != chapterIndex || !textChapter.hasBodyContent) return
+        val paragraphs = textChapter.paragraphTexts
+        if (paragraphs.isEmpty()) return
+        val key = buildReviewSummaryKey(book, chapterIndex)
+        val cached = synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] }
+        if (cached != null) {
+            applyReviewSummary(
+                key,
+                chapterIndex,
+                synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
+                    ?: ReviewSummaryResult(emptyMap(), emptyMap())
+            )
+            return
+        }
+        synchronized(nostrReviewSummaryLoadingKeys) {
+            if (!nostrReviewSummaryLoadingKeys.add(key)) return
+        }
+
+        Coroutine.async(lifecycleScope, IO) {
+            val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, chapterIndex)
+                ?: return@async null
+            if (chapter.isVolume) return@async null
+            NostrReviewClient.loadSummary(book, chapter.url, paragraphs)
+        }.onSuccess(Main) { summary ->
+            synchronized(nostrReviewSummaryLoadingKeys) {
+                nostrReviewSummaryLoadingKeys.remove(key)
+            }
+            if (summary == null || !AppConfig.nostrReviewEnabled) return@onSuccess
+            val currentBook = ReadBook.book ?: return@onSuccess
+            if (buildReviewSummaryKey(currentBook, ReadBook.durChapterIndex) != key) return@onSuccess
+            val result = ReviewSummaryResult(summary.counts, emptyMap())
+            synchronized(nostrReviewSummaryCache) {
+                nostrReviewSummaryCache[key] = result
+            }
+            applyReviewSummary(
+                key,
+                chapterIndex,
+                synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
+                    ?: ReviewSummaryResult(emptyMap(), emptyMap())
+            )
+        }.onError {
+            synchronized(nostrReviewSummaryLoadingKeys) {
+                nostrReviewSummaryLoadingKeys.remove(key)
+            }
+            AppLog.put("加载 Nostr 段评统计失败\n${it.localizedMessage}", it)
+        }
+    }
+
     /**
      * JS 源段评统计加载:复刻声明式路径的通用机制(book/正文就绪门、key 短路、cache、token、providers 清理),
      * 数据来源改由 JsSourceReview.getReviewSummaryAwait 直接 eval getReviewSummary 函数取得。
@@ -1939,7 +2028,18 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     private fun applyReviewSummary(key: String, chapterIndex: Int, result: ReviewSummaryResult) {
-        val counts = result.counts
+        val nostrResult = if (AppConfig.nostrReviewEnabled) {
+            synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] }
+        } else {
+            null
+        }
+        val counts = if (nostrResult == null) {
+            result.counts
+        } else {
+            (result.counts.keys + nostrResult.counts.keys).associateWith { paragraphIndex ->
+                (result.counts[paragraphIndex] ?: 0) + (nostrResult.counts[paragraphIndex] ?: 0)
+            }
+        }
         val keys = result.keys
         ChapterProvider.setReviewProviders(
             countProvider = { targetChapterIndex, reviewId ->

@@ -1331,6 +1331,8 @@ Placeholders:
     <string name="rule_review_detail_name">昵称（detailNameRule）</string>
     <string name="rule_review_detail_badge">徽章（detailBadgeRule）</string>
     <string name="rule_review_detail_content">Comment content protocol（detailContentRule, text/img/audio/time/likeCount/replyCount）</string>
+    <string name="nostr_review">Nostr paragraph comments</string>
+    <string name="nostr_review_summary">Read public paragraph comments from Nostr relays</string>
     <string name="rule_review_reply_list">Sub-comment list（replyListRule）</string>
     <string name="rule_review_reply_id">Sub-comment ID（replyIdRule）</string>
     <string name="rule_review_reply_avatar">Sub-comment avatar（replyAvatarRule）</string>

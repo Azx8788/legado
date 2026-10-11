@@ -222,6 +222,12 @@
             android:title="@string/record_http_log" />
 
         <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="true"
+            android:key="nostrReview"
+            android:summary="@string/nostr_review_summary"
+            android:title="@string/nostr_review" />
+
+        <io.legado.app.lib.prefs.SwitchPreference
             android:defaultValue="false"
             android:key="recordHeapDump"
             android:summary="@string/record_heap_dump_s"

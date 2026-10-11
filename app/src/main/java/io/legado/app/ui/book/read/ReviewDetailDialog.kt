@@ -22,6 +22,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.flexbox.FlexboxLayout
+import kotlinx.coroutines.CancellationException
 import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
 import io.legado.app.constant.AppLog
@@ -32,6 +33,8 @@ import io.legado.app.data.entities.rule.ReviewRule
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.help.glide.ImageLoader
+import io.legado.app.help.config.AppConfig
+import io.legado.app.help.nostr.NostrReviewClient
 import io.legado.app.model.ReadBook
 import io.legado.app.model.analyzeRule.AnalyzeRule
 import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setChapter
@@ -381,66 +384,113 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         if (!hasMore) return
         isLoading = true
         Coroutine.async(lifecycleScope, IO) {
-            val source = ReadBook.bookSource ?: return@async null
+            val source = ReadBook.bookSource
             val book = ReadBook.book ?: return@async null
             val chapterIndex = ReadBook.durChapterIndex
             val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, chapterIndex) ?: return@async null
             val rawKey = ChapterProvider.getReviewKeyById(paragraphNum)
             val paraData = rawKey?.takeIf { it.isNotBlank() } ?: ""
-            if (source.isJsSource()) {
-                val result = JsSourceReview.getReviewDetailAwait(
+            val sourceResult = if (source == null) null else try {
+                if (source.isJsSource()) {
+                JsSourceReview.getReviewDetailAwait(
                     source, book, chapter, paragraphNum, paraData, page
-                ) ?: return@async null
-                return@async ReviewResult(
-                    items = result.first.map { convertJsReviewItemToUi(it) },
-                    nextPageUrl = result.second,
-                    hasNextPageRule = result.second != null
-                )
+                )?.let { result ->
+                    ReviewResult(
+                        items = result.first.map { convertJsReviewItemToUi(it) },
+                        nextPageUrl = result.second,
+                        hasNextPageRule = result.second != null
+                    )
+                }
+                } else {
+                val rule = source.ruleReview?.takeIf { it.enabled }
+                val firstPageUrlRule = rule?.reviewDetailUrl?.takeIf { it.isNotBlank() }
+                val nextPageUrlRule = rule?.reviewDetailNextPageUrl?.takeIf { it.isNotBlank() }
+                val effectiveNextUrl = nextPageUrl?.takeIf {
+                    it.isNotBlank() && it != NOSTR_MORE_PAGE
+                }
+                if (rule == null || firstPageUrlRule == null ||
+                    page > 1 && effectiveNextUrl == null && nextPageUrlRule == null ||
+                    rule.detailListRule.isNullOrBlank() || rule.detailContentRule.isNullOrBlank()
+                ) {
+                    null
+                } else {
+                    val detailUrlRule = when {
+                        page > 1 && !effectiveNextUrl.isNullOrBlank() -> effectiveNextUrl
+                        page > 1 -> nextPageUrlRule ?: firstPageUrlRule
+                        else -> firstPageUrlRule
+                    }
+                    val paraIndex = paragraphNum.toString()
+                    val analyzeUrl = AnalyzeUrl(
+                        detailUrlRule,
+                        page = page,
+                        extraParams = mapOf(
+                            "paraIndex" to paraIndex,
+                            "paraData" to paraData,
+                            "page" to page.toString()
+                        ),
+                        baseUrl = chapter.url,
+                        source = source,
+                        ruleData = book,
+                        chapter = chapter,
+                        coroutineContext = coroutineContext
+                    )
+                    val body = analyzeUrl.getStrResponseAwait().body ?: ""
+                    val result = parseReviewDetailList(
+                        body = body,
+                        rule = rule,
+                        nextPageRule = nextPageUrlRule,
+                        baseUrl = analyzeUrl.url,
+                        source = source,
+                        book = book,
+                        chapter = chapter,
+                        context = coroutineContext,
+                        paraIndex = paraIndex,
+                        paraData = paraData,
+                        page = page.toString()
+                    )
+                    ReviewResult(result.items, result.nextPageUrl, nextPageUrlRule != null)
+                }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.put("加载站点段评详情失败\n${e.localizedMessage}", e)
+                null
             }
-            val rule = source.ruleReview ?: return@async null
-            if (!rule.enabled) return@async null
-            val firstPageUrlRule = rule.reviewDetailUrl?.takeIf { it.isNotBlank() } ?: return@async null
-            val nextPageUrlRule = rule.reviewDetailNextPageUrl?.takeIf { it.isNotBlank() }
-            val effectiveNextUrl = nextPageUrl?.takeIf { it.isNotBlank() }
-            if (page > 1 && effectiveNextUrl == null && nextPageUrlRule == null) return@async null
-            val detailUrlRule = when {
-                page > 1 && !effectiveNextUrl.isNullOrBlank() -> effectiveNextUrl
-                page > 1 -> nextPageUrlRule ?: firstPageUrlRule
-                else -> firstPageUrlRule
+            val textChapter = ReadBook.curTextChapter?.takeIf {
+                it.chapter.index == chapterIndex
             }
-            if (rule.detailListRule.isNullOrBlank() || rule.detailContentRule.isNullOrBlank()) {
-                return@async null
+            val paragraphText = textChapter?.paragraphTexts?.getOrNull(paragraphNum - 1)
+            val nostrResult = if (AppConfig.nostrReviewEnabled && !paragraphText.isNullOrBlank()) {
+                runCatching {
+                    NostrReviewClient.loadDetails(book, chapter.url, paragraphText, page)
+                }.onFailure {
+                    if (it is CancellationException) throw it
+                    AppLog.put("加载 Nostr 段评详情失败\n${it.localizedMessage}", it)
+                }.getOrNull()?.let { details ->
+                    ReviewResult(
+                        items = details.items.map { it.toReviewDetailItem() },
+                        nextPageUrl = if (details.hasMore) "more" else null,
+                        hasNextPageRule = true
+                    )
+                }
+            } else {
+                null
             }
-            val paraIndex = paragraphNum.toString()
-            val analyzeUrl = AnalyzeUrl(
-                detailUrlRule,
-                page = page,
-                extraParams = mapOf(
-                    "paraIndex" to paraIndex,
-                    "paraData" to paraData,
-                    "page" to page.toString()
-                ),
-                baseUrl = chapter.url,
-                source = source,
-                ruleData = book,
-                chapter = chapter,
-                coroutineContext = coroutineContext
+            if (sourceResult == null && nostrResult == null) return@async null
+            val sourceHasMore = sourceResult?.hasNextPageRule == true &&
+                !sourceResult.nextPageUrl.isNullOrBlank()
+            val nostrHasMore = nostrResult?.hasNextPageRule == true &&
+                !nostrResult.nextPageUrl.isNullOrBlank()
+            ReviewResult(
+                items = sourceResult?.items.orEmpty() + nostrResult?.items.orEmpty(),
+                nextPageUrl = when {
+                    sourceHasMore -> sourceResult?.nextPageUrl
+                    nostrHasMore -> NOSTR_MORE_PAGE
+                    else -> null
+                },
+                hasNextPageRule = sourceResult?.hasNextPageRule == true || nostrResult?.hasNextPageRule == true
             )
-            val body = analyzeUrl.getStrResponseAwait().body ?: ""
-            val result = parseReviewDetailList(
-                body = body,
-                rule = rule,
-                nextPageRule = nextPageUrlRule,
-                baseUrl = analyzeUrl.url,
-                source = source,
-                book = book,
-                chapter = chapter,
-                context = coroutineContext,
-                paraIndex = paraIndex,
-                paraData = paraData,
-                page = page.toString()
-            )
-            ReviewResult(result.items, result.nextPageUrl, nextPageUrlRule != null)
         }.onSuccess(Main) { result ->
             if (!append) {
                 binding.rotateLoading.gone()
@@ -579,6 +629,20 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         return jsReviewItemToUi(item, flatReplies)
     }
 
+    private fun NostrReviewClient.Comment.toReviewDetailItem(): ReviewDetailItem = ReviewDetailItem(
+        id = id,
+        avatar = null,
+        name = name,
+        badges = emptyList(),
+        content = content,
+        imageUrl = null,
+        audioUrl = null,
+        time = time,
+        likeCount = null,
+        replyCount = replies.size,
+        replies = replies.map { it.toReviewDetailItem() }
+    )
+
     private fun jsReviewItemToUi(
         item: JsSourceReview.ReviewDetailItem,
         replies: List<ReviewDetailItem>
@@ -703,6 +767,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         private const val MAX_HEIGHT_RATIO = 0.92f
         const val TYPE_NORMAL = 0
         const val TYPE_MORE = 1
+        private const val NOSTR_MORE_PAGE = "nostr-more"
         const val PAYLOAD_AUDIO_STATE = "review_audio_state"
         private var lastHeightRatio = DEFAULT_HEIGHT_RATIO
     }
