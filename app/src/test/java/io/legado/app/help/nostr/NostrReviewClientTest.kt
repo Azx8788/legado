@@ -37,6 +37,7 @@ class NostrReviewClientTest {
             pubkey = "pubkey",
             content = paragraphs[1],
             createdAt = 1,
+            kind = 9802,
             tags = listOf(
                 listOf("r", "https://other-source.example/chapter"),
                 listOf("context", "sentence establishes the first location. An unmistakable following")
@@ -64,6 +65,7 @@ class NostrReviewClientTest {
             pubkey = "pubkey",
             content = paragraphs[1],
             createdAt = 1,
+            kind = 9802,
             tags = listOf(
                 listOf("r", "https://other-source.example/chapter"),
                 listOf("context", "unrelated words from another chapter's context")
@@ -77,5 +79,23 @@ class NostrReviewClientTest {
         )
 
         assertFalse(matches.containsKey(2))
+    }
+
+    @Test
+    fun eventVerificationRejectsMismatchedEventIdBeforeSignatureCheck() {
+        val validLengthHex = "00".repeat(32)
+        val signatureHex = "00".repeat(64)
+
+        val isValid = NostrReviewClient.verifyEvent(
+            id = validLengthHex,
+            pubkey = validLengthHex,
+            createdAt = 1,
+            kind = 9802,
+            tags = emptyList(),
+            content = "excerpt",
+            signature = signatureHex
+        )
+
+        assertFalse(isValid)
     }
 }

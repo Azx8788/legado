@@ -2,6 +2,7 @@ package io.legado.app.help.nostr
 
 import io.legado.app.data.entities.Book
 import io.legado.app.help.http.okHttpClient
+import fr.acinq.secp256k1.Secp256k1
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -177,6 +178,9 @@ object NostrReviewClient {
     }
 
     private suspend fun queryEvents(filter: JSONObject): List<NostrEvent> = coroutineScope {
+        val expectedKinds = filter.optJSONArray("kinds")?.let { kinds ->
+            (0 until kinds.length()).map { kinds.optInt(it) }.toSet()
+        }.orEmpty()
         val results = relays.map { relay ->
             async(Dispatchers.IO) {
                 runCatching { queryRelay(relay, filter) }
@@ -186,7 +190,9 @@ object NostrReviewClient {
         if (successful.isEmpty()) {
             throw results.firstOrNull()?.exceptionOrNull() ?: IllegalStateException("Nostr relay unavailable")
         }
-        successful.flatMap { it.getOrThrow() }.distinctBy { it.id }
+        successful.flatMap { it.getOrThrow() }
+            .filter { expectedKinds.isEmpty() || it.kind in expectedKinds }
+            .distinctBy { it.id }
     }
 
     private suspend fun queryRelay(relay: String, filter: JSONObject): List<NostrEvent> =
@@ -278,11 +284,53 @@ object NostrReviewClient {
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
 
+    internal fun verifyEvent(
+        id: String,
+        pubkey: String,
+        createdAt: Long,
+        kind: Int,
+        tags: List<List<String>>,
+        content: String,
+        signature: String
+    ): Boolean = runCatching {
+        val canonicalTags = JSONArray().apply {
+            tags.forEach { tag -> put(JSONArray(tag)) }
+        }
+        val serialized = JSONArray()
+            .put(0)
+            .put(pubkey)
+            .put(createdAt)
+            .put(kind)
+            .put(canonicalTags)
+            .put(content)
+            .toString()
+        val calculatedId = MessageDigest.getInstance("SHA-256")
+            .digest(serialized.toByteArray(Charsets.UTF_8))
+        val suppliedId = id.hexToByteArray() ?: return false
+        if (!MessageDigest.isEqual(calculatedId, suppliedId)) return false
+        val signatureBytes = signature.hexToByteArray() ?: return false
+        val publicKeyBytes = pubkey.hexToByteArray() ?: return false
+        if (signatureBytes.size != 64 || publicKeyBytes.size != 32) return false
+        Secp256k1.verifySchnorr(
+            signatureBytes,
+            calculatedId,
+            publicKeyBytes
+        )
+    }.getOrDefault(false)
+
+    private fun String.hexToByteArray(): ByteArray? {
+        if (length % 2 != 0 || any { it.digitToIntOrNull(16) == null }) return null
+        return ByteArray(length / 2) { index ->
+            substring(index * 2, index * 2 + 2).toInt(16).toByte()
+        }
+    }
+
     internal data class NostrEvent(
         val id: String,
         val pubkey: String,
         val content: String,
         val createdAt: Long,
+        val kind: Int,
         val tags: List<List<String>>,
         val children: List<NostrEvent> = emptyList()
     ) {
@@ -295,17 +343,21 @@ object NostrReviewClient {
         companion object {
             fun fromJson(json: JSONObject): NostrEvent? {
                 val id = json.optString("id").takeIf { it.isNotBlank() } ?: return null
+                val pubkey = json.optString("pubkey").takeIf { it.isNotBlank() } ?: return null
+                val createdAt = json.optLong("created_at", -1).takeIf { it >= 0 } ?: return null
+                val kind = json.optInt("kind", -1).takeIf { it == 9802 || it == 1111 } ?: return null
+                val content = json.optString("content")
+                val signature = json.optString("sig").takeIf { it.isNotBlank() } ?: return null
                 val tags = json.optJSONArray("tags") ?: JSONArray()
-                return NostrEvent(
-                    id = id,
-                    pubkey = json.optString("pubkey"),
-                    content = json.optString("content"),
-                    createdAt = json.optLong("created_at"),
-                    tags = (0 until tags.length()).mapNotNull { index ->
-                        val tag = tags.optJSONArray(index) ?: return@mapNotNull null
-                        (0 until tag.length()).map { tag.optString(it) }
-                    }
-                )
+                val parsedTags = (0 until tags.length()).mapNotNull { index ->
+                    val tag = tags.optJSONArray(index) ?: return@mapNotNull null
+                    (0 until tag.length()).map { tag.optString(it) }
+                }
+                if (id.hexToByteArray()?.size != 32 || pubkey.hexToByteArray()?.size != 32 ||
+                    signature.hexToByteArray()?.size != 64
+                ) return null
+                if (!verifyEvent(id, pubkey, createdAt, kind, parsedTags, content, signature)) return null
+                return NostrEvent(id, pubkey, content, createdAt, kind, parsedTags)
             }
         }
     }
