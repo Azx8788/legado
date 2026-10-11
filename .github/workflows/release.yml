@@ -84,6 +84,7 @@ jobs:
         run: |
           # not use this output
           # echo "KeyStore=yes" >> $GITHUB_OUTPUT
+          cp $GITHUB_WORKSPACE/.github/workflows/legado.jks $GITHUB_WORKSPACE/app/key.jks
           echo -e "\n" >> gradle.properties
           echo RELEASE_KEY_ALIAS='${{ secrets.RELEASE_KEY_ALIAS }}' >> gradle.properties
           echo RELEASE_KEY_PASSWORD='${{ secrets.RELEASE_KEY_PASSWORD }}' >> gradle.properties
