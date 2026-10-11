@@ -1807,10 +1807,26 @@ class ReadBookActivity : BaseReadBookActivity(),
         ChapterProvider.clearReviewProviders()
     }
 
+    private fun clearNativeReviewSummary() {
+        reviewSummaryRequestToken++
+        reviewSummaryAppliedKey = null
+        reviewSummaryLoadingKey = null
+        val book = ReadBook.book ?: run {
+            ChapterProvider.clearReviewProviders()
+            return
+        }
+        val chapterIndex = ReadBook.durChapterIndex
+        val key = buildReviewSummaryKey(book, chapterIndex)
+        synchronized(reviewSummaryCache) {
+            reviewSummaryCache.remove(key)
+        }
+        applyReviewSummary(key, chapterIndex, ReviewSummaryResult(emptyMap(), emptyMap()))
+    }
+
     private fun loadReviewSummaryIfNeeded() {
         loadNostrReviewSummaryIfNeeded()
         val source = ReadBook.bookSource ?: run {
-            invalidateReviewSummary()
+            clearNativeReviewSummary()
             return
         }
         if (source.isJsSource()) {
@@ -1818,22 +1834,22 @@ class ReadBookActivity : BaseReadBookActivity(),
             return
         }
         val reviewRule = source.ruleReview ?: run {
-            invalidateReviewSummary()
+            clearNativeReviewSummary()
             return
         }
         if (!reviewRule.enabled) {
-            invalidateReviewSummary()
+            clearNativeReviewSummary()
             return
         }
         val rule = reviewRule.reviewSummaryUrl?.takeIf { it.isNotBlank() } ?: run {
-            invalidateReviewSummary()
+            clearNativeReviewSummary()
             return
         }
         if (reviewRule.summaryListRule.isNullOrBlank() ||
             reviewRule.summaryParagraphIndexRule.isNullOrBlank() ||
             reviewRule.summaryCountRule.isNullOrBlank()
         ) {
-            invalidateReviewSummary()
+            clearNativeReviewSummary()
             return
         }
         val book = ReadBook.book ?: return
@@ -1894,7 +1910,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 applyReviewSummary(key, chapterIndex, result)
                 prefetchAdjacentReviewSummary(book, source, reviewRule, chapterIndex)
             } else {
-                ChapterProvider.clearReviewProviders()
+                clearNativeReviewSummary()
             }
         }.onError {
             releaseReviewSummaryLoadingKey(key)
@@ -1904,7 +1920,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 buildReviewSummaryKey(book, ReadBook.durChapterIndex)
             }
             if (curKey != key) return@onError
-            ChapterProvider.clearReviewProviders()
+            clearNativeReviewSummary()
             AppLog.put("加载段评统计出错\n${it.localizedMessage}", it)
         }
     }
@@ -2012,7 +2028,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 }
                 applyReviewSummary(key, chapterIndex, result)
             } else {
-                ChapterProvider.clearReviewProviders()
+                clearNativeReviewSummary()
             }
         }.onError {
             releaseReviewSummaryLoadingKey(key)
@@ -2022,7 +2038,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 buildReviewSummaryKey(book, ReadBook.durChapterIndex)
             }
             if (curKey != key) return@onError
-            ChapterProvider.clearReviewProviders()
+            clearNativeReviewSummary()
             AppLog.put("加载段评统计出错\n${it.localizedMessage}", it)
         }
     }

@@ -57,10 +57,9 @@ object NostrReviewClient {
             JSONObject()
                 .put("kinds", JSONArray().put(9802))
                 .put("#i", JSONArray().put(bookTag))
-                .put("#r", JSONArray().put(chapterUrl))
                 .put("limit", 1000)
         )
-        val matched = matchParagraphs(excerpts, paragraphs)
+            val matched = matchParagraphs(excerpts, paragraphs, chapterUrl)
         val excerptIds = matched.values.flatten().map { it.id }.distinct()
         if (excerptIds.isEmpty()) return Summary(emptyMap())
 
@@ -76,18 +75,20 @@ object NostrReviewClient {
     suspend fun loadDetails(
         book: Book,
         chapterUrl: String,
-        paragraph: String,
+        paragraphs: List<String>,
+        paragraphIndex: Int,
         page: Int
     ): Details {
-        if (paragraph.isBlank()) return Details(emptyList(), false)
+        if (paragraphs.getOrNull(paragraphIndex - 1).isNullOrBlank()) {
+            return Details(emptyList(), false)
+        }
         val excerpts = queryEvents(
             JSONObject()
                 .put("kinds", JSONArray().put(9802))
                 .put("#i", JSONArray().put(bookIdentifier(book.name, book.author)))
-                .put("#r", JSONArray().put(chapterUrl))
                 .put("limit", 1000)
         )
-        val matching = matchParagraphs(excerpts, listOf(paragraph))[1].orEmpty()
+        val matching = matchParagraphs(excerpts, paragraphs, chapterUrl)[paragraphIndex].orEmpty()
         if (matching.isEmpty()) return Details(emptyList(), false)
         val excerptIds = matching.map { it.id }.distinct()
         val comments = queryComments(excerptIds)
@@ -109,36 +110,51 @@ object NostrReviewClient {
         return "legado:book:${sha256("v1|$normalizedName|$normalizedAuthor")}" 
     }
 
-    private fun matchParagraphs(
+    internal fun matchParagraphs(
         excerpts: List<NostrEvent>,
-        paragraphs: List<String>
+        paragraphs: List<String>,
+        chapterUrl: String
     ): Map<Int, List<NostrEvent>> {
         val normalizedParagraphs = paragraphs.map(::normalize)
+        val indexesByText = normalizedParagraphs.mapIndexedNotNull { index, paragraph ->
+            paragraph.takeIf { it.isNotEmpty() }?.let { it to index }
+        }.groupBy({ it.first }, { it.second })
+        val indexesByHash = normalizedParagraphs.mapIndexedNotNull { index, paragraph ->
+            paragraph.takeIf { it.isNotEmpty() }?.let { sha256(it) to index }
+        }.groupBy({ it.first }, { it.second })
         val matches = mutableMapOf<Int, MutableList<NostrEvent>>()
         excerpts.forEach { event ->
             val content = normalize(event.content)
-            val candidates = normalizedParagraphs.mapIndexedNotNull { index, paragraph ->
-                if (paragraph.isEmpty()) return@mapIndexedNotNull null
-                val paragraphHash = sha256(paragraph)
-                val isMatch = content == paragraph || content == "sha256:$paragraphHash" ||
-                    content == paragraphHash || event.tagValues("t").any {
-                        it == "legado:paragraph:$paragraphHash" || it == paragraphHash
-                    }
-                if (isMatch) index else null
+            val candidateIndexes = linkedSetOf<Int>()
+            candidateIndexes.addAll(indexesByText[content].orEmpty())
+            val contentHash = content.removePrefix("sha256:")
+            candidateIndexes.addAll(indexesByHash[contentHash].orEmpty())
+            event.tagValues("t").forEach { tag ->
+                val paragraphHash = tag.removePrefix("legado:paragraph:")
+                candidateIndexes.addAll(indexesByHash[paragraphHash].orEmpty())
             }
+            val candidates = candidateIndexes.toList()
             val context = normalize(event.tagValues("context").firstOrNull().orEmpty())
-            val selected = if (candidates.size > 1 && context.isNotEmpty()) {
+            val referenceScore = if (chapterUrl in event.tagValues("r")) 4 else 0
+            val contextScore: (Int) -> Int = { index ->
+                var score = 0
+                normalizedParagraphs.getOrNull(index - 1)?.takeLast(24)
+                    ?.takeIf { it.length >= 8 && context.contains(it) }?.let { score++ }
+                normalizedParagraphs.getOrNull(index + 1)?.take(24)
+                    ?.takeIf { it.length >= 8 && context.contains(it) }?.let { score++ }
+                score
+            }
+            val selected = if (candidates.size > 1) {
                 val scores = candidates.associateWith { index ->
-                    var score = 0
-                    normalizedParagraphs.getOrNull(index - 1)?.takeLast(24)
-                        ?.takeIf { it.length >= 8 && context.contains(it) }?.let { score++ }
-                    normalizedParagraphs.getOrNull(index + 1)?.take(24)
-                        ?.takeIf { it.length >= 8 && context.contains(it) }?.let { score++ }
-                    score
+                    referenceScore + contextScore(index)
                 }
                 val bestScore = scores.values.maxOrNull() ?: 0
                 val best = scores.filterValues { it == bestScore }.keys
                 if (bestScore > 0 && best.size == 1) best else candidates
+            } else if (candidates.size == 1 && context.isNotEmpty() &&
+                referenceScore == 0 && contextScore(candidates.single()) == 0
+            ) {
+                emptyList()
             } else {
                 candidates
             }
@@ -262,7 +278,7 @@ object NostrReviewClient {
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
 
-    private data class NostrEvent(
+    internal data class NostrEvent(
         val id: String,
         val pubkey: String,
         val content: String,
