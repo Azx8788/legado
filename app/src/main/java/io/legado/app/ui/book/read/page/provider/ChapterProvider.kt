@@ -1037,7 +1037,9 @@ object ChapterProvider {
                     chapterIndex = chapterIndex
                 )
                 var changed = false
-                val shouldShow = count > 0 && line.isParagraphEnd
+                // count == -1 表示该段落可写但还没有人评论（登录远程签名器后），
+                // 需要显示一个空的评论气泡作为「首评」入口；count == 0 才是完全无段评。
+                val shouldShow = count != 0 && line.isParagraphEnd
                 if (!shouldShow) {
                     if (line.removeColumns { it is ReviewColumn }) {
                         changed = true
@@ -1098,7 +1100,8 @@ object ChapterProvider {
             titleOffset ?: textLine.reviewTitleOffset,
             chapterIndex
         )
-        if (count <= 0) return
+        // count == -1 是可写的空评论气泡，也要落到列上，不能当 0 忽略。
+        if (count == 0) return
         textLine.columns.forEach { column ->
             if (column is ReviewColumn) {
                 column.count = count
@@ -1118,7 +1121,8 @@ object ChapterProvider {
             titleOffset ?: textLine.reviewTitleOffset,
             chapterIndex
         )
-        if (count <= 0) return
+        // count == -1 是可写的空评论气泡，也要显示出来。
+        if (count == 0) return
         val reviewColumn = ReviewColumn(start = 0f, end = 0f, count = count)
         updateReviewColumnLayout(reviewColumn, textLine)
         textLine.addColumn(reviewColumn)

@@ -346,6 +346,8 @@ class OtherConfigFragment : PreferenceFragment(),
                 positiveButton(getString(R.string.nostr_signer_disconnect)) {
                     NostrSignerStore.clear()
                     updateNostrSignerSummary()
+                    // 断开后清掉可能残留的「可首评」占位标记。
+                    postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                     toastOnUi(getString(R.string.nostr_signer_disconnected))
                 }
                 cancelButton()
@@ -432,6 +434,8 @@ class OtherConfigFragment : PreferenceFragment(),
             }
             result.onSuccess {
                 updateNostrSignerSummary()
+                // 登录成功后让阅读页重新统计段评,以便给无评论的段落显示可首评图标。
+                postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                 toastOnUi(getString(R.string.nostr_signer_connected))
             }.onFailure {
                 AppLog.put("Nostr signer connection failed", it, tag = "Nostr")
@@ -650,6 +654,8 @@ class OtherConfigFragment : PreferenceFragment(),
             result.onSuccess {
                 dialog.dismiss()
                 updateNostrSignerSummary()
+                // 登录成功后让阅读页重新统计段评,以便给无评论的段落显示可首评图标。
+                postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                 toastOnUi(getString(R.string.nostr_signer_connected))
             }.onFailure {
                 AppLog.put("Nostr signer pairing failed", it, tag = "Nostr")

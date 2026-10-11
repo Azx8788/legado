@@ -1,5 +1,6 @@
 package io.legado.app.help.nostr
 
+import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.Book
 import fr.acinq.secp256k1.Secp256k1
 import kotlinx.coroutines.CancellationException
@@ -55,13 +56,20 @@ object NostrReviewClient {
     ): Summary {
         if (paragraphs.isEmpty()) return Summary(emptyMap())
         val bookTag = bookIdentifier(book.name, book.author)
-        val excerpts = queryEvents(
-            JSONObject()
-                .put("kinds", JSONArray().put(9802))
-                .put("#i", JSONArray().put(bookTag))
-                .put("limit", 1000)
-        )
-            val matched = matchParagraphs(excerpts, paragraphs, chapterUrl)
+        // 中继全部不可用时降级为「暂无摘录」:已登录用户仍能看到可首评的占位图标,
+        // 而不是因为查询异常整章都没有段评入口(发布时的中继错误会单独提示)。
+        val excerpts = runCatching {
+            queryEvents(
+                JSONObject()
+                    .put("kinds", JSONArray().put(9802))
+                    .put("#i", JSONArray().put(bookTag))
+                    .put("limit", 1000)
+            )
+        }.onFailure {
+            if (it is CancellationException) throw it
+            AppLog.put("查询 Nostr 段落摘录失败\n${it.localizedMessage}", it, tag = "Nostr")
+        }.getOrDefault(emptyList())
+        val matched = matchParagraphs(excerpts, paragraphs, chapterUrl)
         val excerptIds = matched.values.flatten().map { it.id }.distinct()
         if (excerptIds.isEmpty()) {
             val writableParagraphs = if (allowCreatingComments) {

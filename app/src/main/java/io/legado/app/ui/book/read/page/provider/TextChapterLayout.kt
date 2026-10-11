@@ -794,7 +794,8 @@ class TextChapterLayout(
             reviewTitleOffset,
             chapterIndex = bookChapter.index
         )
-        if (count <= 0) return
+        // count == -1 是可写的空评论气泡，也要落到列上。
+        if (count == 0) return
         textLine.columns.forEach { column ->
             if (column is ReviewColumn) {
                 column.count = count

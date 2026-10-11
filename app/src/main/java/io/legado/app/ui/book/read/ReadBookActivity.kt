@@ -1993,6 +1993,26 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     /**
+     * 发表/回复 Nostr 段评后由段评弹窗通知:作废当前章的 Nostr 统计缓存并重新拉取，
+     * 使「首评」(-1 占位)气泡更新为真实评论数，多出的评论也能立刻反映到正文图标上。
+     */
+    private fun refreshReviewSummaryAfterPublish() {
+        if (!AppConfig.nostrReviewEnabled) return
+        val book = ReadBook.book ?: return
+        val chapterIndex = ReadBook.durChapterIndex
+        val key = buildReviewSummaryKey(book, chapterIndex)
+        synchronized(nostrReviewSummaryCache) {
+            nostrReviewSummaryCache.remove(key)
+        }
+        synchronized(nostrReviewSummaryLoadingKeys) {
+            nostrReviewSummaryLoadingKeys.remove(key)
+        }
+        // 作废在途的统计响应，避免旧结果覆盖刚刷新的数据。
+        reviewSummaryRequestToken++
+        loadNostrReviewSummaryIfNeeded()
+    }
+
+    /**
      * JS 源段评统计加载:复刻声明式路径的通用机制(book/正文就绪门、key 短路、cache、token、providers 清理),
      * 数据来源改由 JsSourceReview.getReviewSummaryAwait 直接 eval getReviewSummary 函数取得。
      * JS 源换章即时加载,未做相邻章预取(eval 成本与 search/toc 同量级,即时加载足够)。
@@ -2538,6 +2558,9 @@ class ReadBookActivity : BaseReadBookActivity(),
     override fun observeLiveBus() = binding.run {
         observeEvent<String>(EventBus.TIME_CHANGED) { readView.upTime() }
         observeEvent<Int>(EventBus.BATTERY_CHANGED) { readView.upBattery(it) }
+        observeEvent<String>(EventBus.REFRESH_REVIEW_SUMMARY) {
+            refreshReviewSummaryAfterPublish()
+        }
         observeEvent<Boolean>(EventBus.MEDIA_BUTTON) {
             if (it) {
                 onClickReadAloud()

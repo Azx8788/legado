@@ -31,6 +31,7 @@ import kotlinx.coroutines.withContext
 import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
 import io.legado.app.constant.AppLog
+import io.legado.app.constant.EventBus
 import io.legado.app.base.adapter.ItemViewHolder
 import io.legado.app.base.adapter.RecyclerAdapter
 import io.legado.app.data.appDb
@@ -54,6 +55,7 @@ import io.legado.app.utils.gone
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.isDataUrl
 import io.legado.app.utils.getCompatColor
+import io.legado.app.utils.postEvent
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.visible
 import io.legado.app.utils.viewbindingdelegate.viewBinding
@@ -296,6 +298,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         binding.rotateLoading.gone()
                         dialog.dismiss()
                         loadDetailPage(paragraphNum, 1, append = false)
+                        // 通知阅读页刷新段评统计,让「首评」气泡(-1 占位)变为真实评论数。
+                        postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                     }.onFailure {
                         binding.rotateLoading.gone()
                         dialog.dismiss()
