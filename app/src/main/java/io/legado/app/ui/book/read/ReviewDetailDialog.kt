@@ -94,6 +94,11 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private var nextPageUrl: String? = null
     private val mainItemIndexByKey = LinkedHashMap<String, Int>()
     private val detailItems = ArrayList<ReviewDetailItem>()
+
+    private fun detailCacheKey(): String? {
+        val book = ReadBook.book ?: return null
+        return "${book.bookUrl}|${ReadBook.durChapterIndex}|$paragraphNum"
+    }
     private val expandedReplyParentKeys = HashSet<String>()
     private var reviewAudioPlayer: ExoPlayer? = null
     private var currentAudioUrl: String? = null
@@ -470,6 +475,14 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             mainItemIndexByKey.clear()
             detailItems.clear()
             expandedReplyParentKeys.clear()
+            // 先渲染上次的首页内容，联网结果回来后再合并刷新
+            detailCacheKey()?.let { cacheKey ->
+                detailFirstPageCache[cacheKey]?.takeIf { it.isNotEmpty() }?.let { cached ->
+                    binding.rotateLoading.gone()
+                    mergeDetailItems(cached)
+                    renderUiItems()
+                }
+            }
         }
         if (!hasMore) return
         isLoading = true
@@ -614,6 +627,11 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             }
             currentPage = page
             renderUiItems()
+            if (!append && page == 1) {
+                detailCacheKey()?.let { cacheKey ->
+                    detailFirstPageCache[cacheKey] = ArrayList(detailItems)
+                }
+            }
             isLoading = false
         }.onError {
             isLoading = false
@@ -663,11 +681,13 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 val mergedReplies = mergeReplies(old.replies, normalized.replies)
                 val mergedReplyCount = max(old.replyCount ?: 0, normalized.replyCount ?: 0)
                     .takeIf { it > 0 }
-                if (mergedReplies.size != old.replies.size || mergedReplyCount != old.replyCount) {
-                    detailItems[index] = old.copy(
-                        replies = mergedReplies,
-                        replyCount = mergedReplyCount
-                    )
+                // 用本次下发的字段覆盖旧条目（点赞/时间/内容可能变），仅回复取并集
+                val refreshed = normalized.copy(
+                    replies = mergedReplies,
+                    replyCount = mergedReplyCount
+                )
+                if (old != refreshed) {
+                    detailItems[index] = refreshed
                     changed++
                 }
             }
@@ -873,6 +893,14 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         private const val NOSTR_MORE_PAGE = "nostr-more"
         const val PAYLOAD_AUDIO_STATE = "review_audio_state"
         private var lastHeightRatio = DEFAULT_HEIGHT_RATIO
+
+        /** 详情首页的内存缓存(跨弹窗实例)：重开时先显已加载的，再联网刷新。 */
+        private val detailFirstPageCache = object :
+            LinkedHashMap<String, List<ReviewDetailItem>>(8, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, List<ReviewDetailItem>>
+            ): Boolean = size > 8
+        }
     }
 
     private data class ReviewParseResult(

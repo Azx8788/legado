@@ -1922,7 +1922,6 @@ class ReadBookActivity : BaseReadBookActivity(),
             synchronized(reviewSummaryCache) { reviewSummaryCache[key] = diskCached }
             applyReviewSummary(key, chapterIndex, diskCached)
             prefetchAdjacentReviewSummary(book, source, reviewRule, chapterIndex)
-            return
         }
         reviewSummaryLoadingKey = key
         val requestToken = ++reviewSummaryRequestToken
@@ -2006,7 +2005,6 @@ class ReadBookActivity : BaseReadBookActivity(),
                 synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
                     ?: ReviewSummaryResult(emptyMap(), emptyMap())
             )
-            return
         }
         synchronized(nostrReviewSummaryLoadingKeys) {
             if (!nostrReviewSummaryLoadingKeys.add(key)) return
