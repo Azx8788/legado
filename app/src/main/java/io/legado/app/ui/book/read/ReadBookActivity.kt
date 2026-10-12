@@ -1875,6 +1875,7 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     private fun loadReviewSummaryIfNeeded() {
         loadNostrReviewSummaryIfNeeded()
+        ReadBook.book?.let { prefetchNextNostrReviewSummary(it) }
         val source = ReadBook.bookSource ?: run {
             clearNativeReviewSummary()
             return
@@ -2046,6 +2047,50 @@ class ReadBookActivity : BaseReadBookActivity(),
                 nostrReviewSummaryLoadingKeys.remove(key)
             }
             AppLog.put("加载 Nostr 段评统计失败\n${it.localizedMessage}", it)
+        }
+    }
+
+    /**
+     * 预取下一章的 Nostr 段评统计并落盘：翻到下一章时可直接命中缓存，不再等网络。
+     */
+    private fun prefetchNextNostrReviewSummary(book: Book) {
+        if (!AppConfig.nostrReviewEnabled) return
+        val maxIndex = if (ReadBook.simulatedChapterSize > 0) {
+            ReadBook.simulatedChapterSize
+        } else {
+            ReadBook.chapterSize
+        }
+        val chapterIndex = ReadBook.durChapterIndex + 1
+        if (chapterIndex !in 0 until maxIndex) return
+        val key = buildReviewSummaryKey(book, chapterIndex)
+        if (readDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key) != null) return
+        val textChapter = ReadBook.nextTextChapter
+            ?.takeIf { it.chapter.index == chapterIndex && it.hasBodyContent }
+            ?: return
+        val paragraphs = textChapter.paragraphTexts
+        if (paragraphs.isEmpty()) return
+        synchronized(reviewSummaryPrefetchingKeys) {
+            if (!reviewSummaryPrefetchingKeys.add(key)) return
+        }
+        Coroutine.async(lifecycleScope, IO) {
+            NostrReviewClient.loadSummary(
+                book,
+                textChapter.chapter.url,
+                paragraphs,
+                allowCreatingComments = NostrSignerStore.load() != null
+            )
+        }.onSuccess(Main) { summary ->
+            synchronized(reviewSummaryPrefetchingKeys) {
+                reviewSummaryPrefetchingKeys.remove(key)
+            }
+            if (summary == null || !AppConfig.nostrReviewEnabled) return@onSuccess
+            val result = ReviewSummaryResult(summary.counts, emptyMap())
+            synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = result }
+            writeDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key, result)
+        }.onError {
+            synchronized(reviewSummaryPrefetchingKeys) {
+                reviewSummaryPrefetchingKeys.remove(key)
+            }
         }
     }
 
