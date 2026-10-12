@@ -2254,7 +2254,11 @@ class ReadBookActivity : BaseReadBookActivity(),
         val counts = countsJson.keys().asSequence()
             .mapNotNull { name -> name.toIntOrNull()?.let { paragraphId -> paragraphId to countsJson.optInt(name) } }
             .toMap()
-        val keys = keysJson.keys().asSequence().associateWith { keysJson.optString(it) }
+        val keys = keysJson.keys().asSequence()
+            .mapNotNull { name ->
+                name.toIntOrNull()?.let { paragraphId -> paragraphId to keysJson.optString(name) }
+            }
+            .toMap()
         return ReviewSummaryResult(counts, keys)
     }
 
