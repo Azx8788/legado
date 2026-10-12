@@ -217,7 +217,7 @@ object NostrNip46 {
         val id = eventId(keyPair.publicKey, createdAt, 24133, tags, content)
         val signature = Secp256k1.signSchnorr(id, keyPair.privateKey, null).toHex()
         val event = JSONObject()
-            .put("id", id)
+            .put("id", id.toHex())
             .put("pubkey", keyPair.publicKey)
             .put("created_at", createdAt)
             .put("kind", 24133)
