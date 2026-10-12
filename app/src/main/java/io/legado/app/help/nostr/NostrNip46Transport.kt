@@ -42,7 +42,20 @@ object NostrNip46Transport {
     private const val NIP46_MAX_RETRIES = 1
     private const val NIP46_RETRY_DELAY_MILLIS = 2_000L
 
+    /** 薄封装：只关心「是否至少有一个中继接受」。 */
     suspend fun publish(relays: List<String>, event: JSONObject, timeoutMillis: Long = 15_000) {
+        publishAndCollect(relays, event, timeoutMillis)
+    }
+
+    /**
+     * 向各中继发布事件，返回实际接受（返回 OK=true）的中继集合。
+     * 语义与 [publish] 一致：失败中继忽略，有任一接受即算成功，全部失败才抛异常。
+     */
+    suspend fun publishAndCollect(
+        relays: List<String>,
+        event: JSONObject,
+        timeoutMillis: Long = 15_000
+    ): Set<String> {
         val validRelays = relays.distinct().filter { relay -> relay.startsWith("wss://", true) }
         require(validRelays.isNotEmpty()) { "No valid Relay available for publishing" }
         val eventId = event.optString("id").takeIf { it.isNotBlank() }
@@ -50,14 +63,18 @@ object NostrNip46Transport {
         val results = coroutineScope {
             validRelays.map { relay ->
                 async(Dispatchers.IO) {
-                    runCatching { publishToRelay(relay, event, eventId, timeoutMillis) }
+                    relay to runCatching { publishToRelay(relay, event, eventId, timeoutMillis) }
                 }
             }.awaitAll()
         }
-        if (results.none { result -> result.getOrDefault(false) }) {
-            throw results.firstNotNullOfOrNull { result -> result.exceptionOrNull() }
+        val accepted = results.filter { (_, result) -> result.getOrDefault(false) }
+            .map { (relay, _) -> relay }
+            .toSet()
+        if (accepted.isEmpty()) {
+            throw results.firstNotNullOfOrNull { (_, result) -> result.exceptionOrNull() }
                 ?: IllegalStateException("No Relay accepted the Nostr event")
         }
+        return accepted
     }
 
     private suspend fun publishToRelay(

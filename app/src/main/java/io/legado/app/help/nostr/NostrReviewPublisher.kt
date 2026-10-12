@@ -34,26 +34,31 @@ object NostrReviewPublisher {
             .filter { it.isNotBlank() }
             .joinToString(" ")
 
-        val excerptId = NostrReviewClient.findParagraphExcerptId(book, chapterTitle, paragraphs, paragraphIndex)
-            ?.also { AppLog.put("段评摘录复用 id=$it", tag = "Nostr") }
-            ?: run {
-                val excerpt = JSONObject()
-                    .put("kind", 9802)
-                    .put("content", paragraph)
-                    .put("created_at", createdAt)
-                    .put("tags", excerptTags(bookIdentifier, context))
-                val signedExcerpt = signAndPublish(session, keyPair, excerpt)
-                val id = signedExcerpt.getString("id")
-                AppLog.put("段评摘录新建 id=$id", tag = "Nostr")
-                ensureExcerptPersisted(session, signedExcerpt)
-                id
-            }
+        val existing = NostrReviewClient.findParagraphExcerpt(book, chapterTitle, paragraphs, paragraphIndex)
+        var excerptRelay: String? = null
+        val excerptId: String
+        if (existing != null) {
+            excerptId = existing.id
+            excerptRelay = existing.relay
+            AppLog.put("段评摘录复用 id=$excerptId relay=${excerptRelay ?: "-"}", tag = "Nostr")
+        } else {
+            val excerpt = JSONObject()
+                .put("kind", 9802)
+                .put("content", paragraph)
+                .put("created_at", createdAt)
+                .put("tags", excerptTags(bookIdentifier, context, paragraph))
+            val published = signAndPublish(session, keyPair, excerpt)
+            excerptId = published.event.getString("id")
+            excerptRelay = published.acceptedRelays.firstOrNull()
+            AppLog.put("段评摘录新建 id=$excerptId relay=${excerptRelay ?: "-"}", tag = "Nostr")
+            ensureExcerptPersisted(session, published.event, listOfNotNull(excerptRelay))
+        }
         val commentEvent = JSONObject()
             .put("kind", 1111)
             .put("content", text)
             .put("created_at", createdAt + 1)
-            .put("tags", commentTags(bookIdentifier, excerptId, session.userPubkey))
-        signAndPublish(session, keyPair, commentEvent)
+            .put("tags", commentTags(bookIdentifier, excerptId, session.userPubkey, excerptRelay))
+        signAndPublish(session, keyPair, commentEvent, listOfNotNull(excerptRelay))
     }
 
     /**
@@ -62,11 +67,12 @@ object NostrReviewPublisher {
      */
     private suspend fun ensureExcerptPersisted(
         session: NostrSignerStore.Session,
-        signedExcerpt: JSONObject
+        signedExcerpt: JSONObject,
+        extraRelays: List<String>
     ) {
         val id = signedExcerpt.getString("id")
         if (excerptReadable(id)) return
-        NostrNip46Transport.publish(session.relays, signedExcerpt)
+        NostrNip46Transport.publish(publishTargets(session, extraRelays), signedExcerpt)
         if (!excerptReadable(id)) {
             throw IllegalStateException("段评摘录未能持久化，已放弃发布评论")
         }
@@ -91,6 +97,8 @@ object NostrReviewPublisher {
         val session = NostrSignerStore.load()
             ?: throw IllegalStateException("Connect a Nostr remote signer before replying")
         val createdAt = System.currentTimeMillis() / 1000
+        // 被引用的摘录/父评论所在中继：既作为 relay hint 写入标签，也额外投递过去。
+        val referencedRelays = NostrReviewClient.findEventRelays(listOf(rootExcerptId, parentCommentId))
         signAndPublish(
             session,
             NostrNip46.ClientKeyPair(session.clientPrivateKey, session.clientPublicKey),
@@ -105,16 +113,20 @@ object NostrReviewPublisher {
                         rootExcerptId = rootExcerptId,
                         rootExcerptPubkey = rootExcerptPubkey,
                         parentCommentId = parentCommentId,
-                        parentAuthorPubkey = parentAuthorPubkey
+                        parentAuthorPubkey = parentAuthorPubkey,
+                        rootExcerptRelay = referencedRelays[rootExcerptId],
+                        parentCommentRelay = referencedRelays[parentCommentId]
                     )
-                )
+                ),
+            extraRelays = referencedRelays.values.toList()
         )
     }
 
     suspend fun reactToComment(commentId: String, authorPubkey: String): String {
         val session = NostrSignerStore.load()
             ?: throw IllegalStateException("Connect a Nostr remote signer before reacting")
-        val signed = signAndPublish(
+        val commentRelay = NostrReviewClient.findEventRelays(listOf(commentId))[commentId]
+        val published = signAndPublish(
             session,
             NostrNip46.ClientKeyPair(session.clientPrivateKey, session.clientPublicKey),
             JSONObject()
@@ -122,10 +134,11 @@ object NostrReviewPublisher {
                 .put("content", "+")
                 .put("created_at", System.currentTimeMillis() / 1000)
                 .put(
-                    "tags", reactionTags(commentId, authorPubkey)
-                )
+                    "tags", reactionTags(commentId, authorPubkey, commentRelay)
+                ),
+            extraRelays = listOfNotNull(commentRelay)
         )
-        return signed.getString("id")
+        return published.event.getString("id")
     }
 
     /** 取消点赞：按 NIP-09 发 kind 5 删除自己那条 reaction。 */
@@ -147,25 +160,38 @@ object NostrReviewPublisher {
     /** NIP-89 客户端标记；名字取项目现成常量 AppConst.APP_TAG，不写字面量。 */
     private fun clientTag(): JSONArray = JSONArray().put("client").put(AppConst.APP_TAG)
 
+    /**
+     * 事件引用标签：id 之后紧跟 relay hint（NIP-10/NIP-22 标准的第三位）。
+     * hint 为空时保持原样只写 id，不写空串占位（与 Amethyst 的 arrayOfNotNull 一致）。
+     */
+    private fun tagWithHint(name: String, id: String, relayHint: String?): JSONArray {
+        val tag = JSONArray().put(name).put(id)
+        if (!relayHint.isNullOrBlank()) tag.put(relayHint)
+        return tag
+    }
+
     internal fun excerptTags(
         bookIdentifier: String,
-        context: String
+        context: String,
+        paragraph: String
     ): JSONArray = JSONArray()
         .put(JSONArray().put("i").put(bookIdentifier))
         .put(JSONArray().put("k").put(NostrReviewClient.BOOK_KIND))
         .put(JSONArray().put("context").put(context))
+        .put(JSONArray().put("t").put(NostrReviewClient.paragraphTagValue(paragraph)))
         .put(clientTag())
 
     internal fun commentTags(
         bookIdentifier: String,
         excerptId: String,
-        userPubkey: String
+        userPubkey: String,
+        excerptRelay: String? = null
     ): JSONArray = JSONArray()
         .put(JSONArray().put("I").put(bookIdentifier))
-        .put(JSONArray().put("E").put(excerptId))
+        .put(tagWithHint("E", excerptId, excerptRelay))
         .put(JSONArray().put("K").put("9802"))
         .put(JSONArray().put("P").put(userPubkey))
-        .put(JSONArray().put("e").put(excerptId))
+        .put(tagWithHint("e", excerptId, excerptRelay))
         .put(JSONArray().put("k").put("9802"))
         .put(JSONArray().put("p").put(userPubkey))
         .put(clientTag())
@@ -175,27 +201,46 @@ object NostrReviewPublisher {
         rootExcerptId: String,
         rootExcerptPubkey: String,
         parentCommentId: String,
-        parentAuthorPubkey: String
+        parentAuthorPubkey: String,
+        rootExcerptRelay: String? = null,
+        parentCommentRelay: String? = null
     ): JSONArray = JSONArray()
         .put(JSONArray().put("I").put(bookIdentifier))
-        .put(JSONArray().put("E").put(rootExcerptId))
+        .put(tagWithHint("E", rootExcerptId, rootExcerptRelay))
         .put(JSONArray().put("K").put("9802"))
         .put(JSONArray().put("P").put(rootExcerptPubkey))
-        .put(JSONArray().put("e").put(parentCommentId))
+        .put(tagWithHint("e", parentCommentId, parentCommentRelay))
         .put(JSONArray().put("k").put("1111"))
         .put(JSONArray().put("p").put(parentAuthorPubkey))
         .put(clientTag())
 
-    internal fun reactionTags(commentId: String, authorPubkey: String): JSONArray = JSONArray()
-        .put(JSONArray().put("e").put(commentId))
+    internal fun reactionTags(
+        commentId: String,
+        authorPubkey: String,
+        commentRelay: String? = null
+    ): JSONArray = JSONArray()
+        .put(tagWithHint("e", commentId, commentRelay))
         .put(JSONArray().put("p").put(authorPubkey))
         .put(clientTag())
+
+    /** 已签名并投递的事件，以及哪些中继接受了它（供上层写 relay hint/扩大后续投递范围）。 */
+    private data class Published(val event: JSONObject, val acceptedRelays: Set<String>)
+
+    /**
+     * 发布目标：签名器会话中继 ∪ 读取中继（会话+已配置/缓存），再并上被引用事件所在中继；
+     * 去重且顺序稳定。
+     */
+    private fun publishTargets(
+        session: NostrSignerStore.Session,
+        extraRelays: List<String>
+    ): List<String> = (session.relays + NostrRelays.forReading() + extraRelays).distinct()
 
     private suspend fun signAndPublish(
         session: NostrSignerStore.Session,
         keyPair: NostrNip46.ClientKeyPair,
-        unsignedEvent: JSONObject
-    ): JSONObject {
+        unsignedEvent: JSONObject,
+        extraRelays: List<String> = emptyList()
+    ): Published {
         val connection = NostrNip46.BunkerConnection(
             signerPubkey = session.signerPubkey,
             relays = session.relays,
@@ -233,8 +278,8 @@ object NostrReviewPublisher {
                 signature = signed.getString("sig")
             )
         ) { "Signer returned an invalid Nostr signature" }
-        NostrNip46Transport.publish(session.relays, signed)
-        return signed
+        val acceptedRelays = NostrNip46Transport.publishAndCollect(publishTargets(session, extraRelays), signed)
+        return Published(signed, acceptedRelays)
     }
 
     private fun jsonTagsToLists(tags: JSONArray): List<List<String>> =

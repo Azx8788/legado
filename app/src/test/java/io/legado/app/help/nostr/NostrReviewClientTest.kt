@@ -255,7 +255,7 @@ class NostrReviewClientTest {
     fun publishedEventTagsCarryNip89ClientTag() {
         val clientTag = listOf("client", AppConst.APP_TAG)
         val tagArrays = listOf(
-            NostrReviewPublisher.excerptTags("book-id", "ctx"),
+            NostrReviewPublisher.excerptTags("book-id", "ctx", "paragraph"),
             NostrReviewPublisher.commentTags("book-id", "excerpt-id", "user-pubkey"),
             NostrReviewPublisher.replyTags(
                 "book-id", "excerpt-id", "excerpt-pubkey", "parent-id", "parent-pubkey"
@@ -295,7 +295,8 @@ class NostrReviewClientTest {
     @Test
     fun excerptTagsCarryKindAndTitleContextWithoutLegacyReference() {
         val context = "药王庙夜谈 上一段 下一段"
-        val tags = NostrReviewPublisher.excerptTags("legado:book:v2|author|thebook", context)
+        val paragraph = "这一段的正文原文。"
+        val tags = NostrReviewPublisher.excerptTags("legado:book:v2|author|thebook", context, paragraph)
         val arrays = (0 until tags.length()).map { tags.getJSONArray(it) }
 
         assertTrue(arrays.none { it.getString(0) == "r" })
@@ -303,6 +304,33 @@ class NostrReviewClientTest {
         assertEquals("legado:book:v2|author|thebook", arrays.first { it.getString(0) == "i" }.getString(1))
         assertEquals("legado:book", arrays.first { it.getString(0) == "k" }.getString(1))
         assertEquals(context, arrays.first { it.getString(0) == "context" }.getString(1))
+    }
+
+    @Test
+    fun excerptParagraphTagMatchesReadSideMatching() {
+        val paragraph = "Repeated paragraph text appears in more than one chapter."
+        val tags = NostrReviewPublisher.excerptTags("book-id", "ctx", paragraph)
+        val tTag = (0 until tags.length()).map { tags.getJSONArray(it) }
+            .first { it.getString(0) == "t" }.getString(1)
+
+        assertTrue(tTag.startsWith(NostrReviewClient.PARAGRAPH_TAG_PREFIX))
+
+        // 只带 t 标签（content 故意写成不相关文本）：读端只能靠 t 标签命中。
+        val excerpt = NostrReviewClient.NostrEvent(
+            id = "event-id",
+            pubkey = "pubkey",
+            content = "unrelated content",
+            createdAt = 1,
+            kind = 9802,
+            tags = listOf(listOf("t", tTag))
+        )
+        val matches = NostrReviewClient.matchParagraphs(
+            listOf(excerpt),
+            listOf("first paragraph.", paragraph, "third paragraph."),
+            chapterTitle = ""
+        )
+
+        assertTrue(matches.containsKey(2))
     }
 
     @Test

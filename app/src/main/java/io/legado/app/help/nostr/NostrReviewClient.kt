@@ -33,6 +33,9 @@ object NostrReviewClient {
     /** 章节标题作匹配信号的最小长度（归一化后），过短/通用的标题不计分。 */
     private const val TITLE_MIN_LENGTH = 4
 
+    /** 段落 `t` 标签前缀：`legado:paragraph:<归一化段落的 sha256>`；写端与 [matchParagraphs] 共用。 */
+    internal const val PARAGRAPH_TAG_PREFIX = "legado:paragraph:"
+
     data class Summary(val counts: Map<Int, Int>)
 
     data class Comment(
@@ -165,25 +168,43 @@ object NostrReviewClient {
         )
     }
 
-    /** 该段落在当前中继上已有的摘录事件 id；没有返回 null。 */
-    suspend fun findParagraphExcerptId(
+    /** 复用已有摘录时同时带回它所在的中继（用于给评论写 relay hint）；没有则 relay 为 null。 */
+    internal data class ExistingExcerpt(val id: String, val relay: String?)
+
+    /** 该段落在当前中继上已有的最新摘录；没有返回 null。 */
+    internal suspend fun findParagraphExcerpt(
         book: Book,
         chapterTitle: String,
         paragraphs: List<String>,
         paragraphIndex: Int
-    ): String? = runCatching {
-        val excerpts = queryEvents(
+    ): ExistingExcerpt? = runCatching {
+        val (excerpts, provenance) = queryEventsWithProvenance(
             JSONObject()
                 .put("kinds", JSONArray().put(9802))
                 .put("#i", JSONArray(bookIdentifiers(book.name, book.author)))
                 .put("limit", 1000)
         )
-        matchParagraphs(excerpts, paragraphs, chapterTitle)[paragraphIndex]
+        val excerpt = matchParagraphs(excerpts, paragraphs, chapterTitle)[paragraphIndex]
             ?.maxByOrNull { it.createdAt }
-            ?.id
+            ?: return@runCatching null
+        ExistingExcerpt(excerpt.id, provenance[excerpt.id]?.firstOrNull())
     }.onFailure {
         if (it is CancellationException) throw it
     }.getOrNull()
+
+    /** 按事件 id 查得「它由哪些中继返回」的其中一个中继，用于发布时的 relay hint。 */
+    internal suspend fun findEventRelays(ids: Collection<String>): Map<String, String> = runCatching {
+        val distinctIds = ids.filter { it.isNotBlank() }.distinct()
+        if (distinctIds.isEmpty()) return@runCatching emptyMap()
+        val (_, provenance) = queryEventsWithProvenance(
+            JSONObject()
+                .put("ids", JSONArray(distinctIds))
+                .put("limit", distinctIds.size)
+        )
+        provenance.mapNotNull { (id, relays) -> relays.firstOrNull()?.let { id to it } }.toMap()
+    }.onFailure {
+        if (it is CancellationException) throw it
+    }.getOrNull().orEmpty()
 
     /** 按事件 id 在当前读取中继上取回事件（取回不到返回 null）。 */
     internal suspend fun fetchEventById(id: String): NostrEvent? = runCatching {
@@ -306,7 +327,7 @@ object NostrReviewClient {
             val contentHash = content.removePrefix("sha256:")
             candidateIndexes.addAll(indexesByHash[contentHash].orEmpty())
             event.tagValues("t").forEach { tag ->
-                val paragraphHash = tag.removePrefix("legado:paragraph:")
+                val paragraphHash = tag.removePrefix(PARAGRAPH_TAG_PREFIX)
                 candidateIndexes.addAll(indexesByHash[paragraphHash].orEmpty())
             }
             val candidates = candidateIndexes.toList()
@@ -369,7 +390,16 @@ object NostrReviewClient {
     private suspend fun queryEvents(
         filter: JSONObject,
         activeRelayList: List<String> = relays()
-    ): List<NostrEvent> = coroutineScope {
+    ): List<NostrEvent> = queryEventsWithProvenance(filter, activeRelayList).first
+
+    /**
+     * 与 [queryEvents] 相同的中继语义（失败中继忽略、任一成功即可、失败全无才抛），
+     * 但额外带回「每条事件由哪些中继返回」的索引，用于发布时给事件引用写 relay hint。
+     */
+    private suspend fun queryEventsWithProvenance(
+        filter: JSONObject,
+        activeRelayList: List<String> = relays()
+    ): Pair<List<NostrEvent>, Map<String, Set<String>>> = coroutineScope {
         val activeRelays = activeRelayList
         val expectedKinds = filter.optJSONArray("kinds")?.let { kinds ->
             (0 until kinds.length()).map { kinds.optInt(it) }.toSet()
@@ -383,9 +413,17 @@ object NostrReviewClient {
         if (successful.isEmpty()) {
             throw results.firstOrNull()?.exceptionOrNull() ?: IllegalStateException("Nostr relay unavailable")
         }
-        successful.flatMap { it.getOrThrow() }
-            .filter { expectedKinds.isEmpty() || it.kind in expectedKinds }
-            .distinctBy { it.id }
+        val events = mutableListOf<NostrEvent>()
+        val provenance = mutableMapOf<String, MutableSet<String>>()
+        activeRelays.forEachIndexed { index, relay ->
+            results[index].getOrNull().orEmpty().forEach { event ->
+                if (expectedKinds.isEmpty() || event.kind in expectedKinds) {
+                    events.add(event)
+                    provenance.getOrPut(event.id) { linkedSetOf() }.add(relay)
+                }
+            }
+        }
+        events.distinctBy { it.id } to provenance
     }
 
     private suspend fun queryRelay(relay: String, filter: JSONObject): List<NostrEvent> =
@@ -491,6 +529,10 @@ object NostrReviewClient {
     private fun normalize(value: String): String = value
         .replace(Regex("\\s+"), " ")
         .trim()
+
+    /** 段落 `t` 标签值；其归一化与哈希必须与 [matchParagraphs] 的 `indexesByHash` 一致。 */
+    internal fun paragraphTagValue(paragraph: String): String =
+        PARAGRAPH_TAG_PREFIX + sha256(normalize(paragraph))
 
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8))
