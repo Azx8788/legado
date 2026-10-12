@@ -179,6 +179,9 @@ import io.legado.app.data.entities.getUseReplaceRule
 import io.legado.app.data.entities.migrateTo
 import io.legado.app.data.entities.save
 
+/** 段评发布后回查统计的延迟：中继写入/索引有延迟，太早回查会把乐观 +1 覆盖掉。 */
+private const val REVIEW_SUMMARY_REFRESH_DELAY_MS = 2000L
+
 /** 选中态下点气泡时，临时气泡延迟多久清除（留出点击时间）。 */
 private const val TRANSIENT_REVIEW_LINGER_MS = 2000L
 
@@ -2156,11 +2159,12 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 发表/回复 Nostr 段评后由段评弹窗通知:作废当前章的 Nostr 统计缓存并重新拉取，
      * 使「首评」(-1 占位)气泡更新为真实评论数，多出的评论也能立刻反映到正文图标上。
      */
-    private fun refreshReviewSummaryAfterPublish() {
+    private fun refreshReviewSummaryAfterPublish(paragraphNum: Int = 0) {
         if (!AppConfig.nostrReviewEnabled) return
         val book = ReadBook.book ?: return
         val chapterIndex = ReadBook.durChapterIndex
         val key = buildReviewSummaryKey(book, chapterIndex)
+        val previous = synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] }
         synchronized(nostrReviewSummaryCache) {
             nostrReviewSummaryCache.remove(key)
         }
@@ -2168,9 +2172,24 @@ class ReadBookActivity : BaseReadBookActivity(),
         synchronized(nostrReviewSummaryLoadingKeys) {
             nostrReviewSummaryLoadingKeys.remove(key)
         }
+        // 乐观：本段计数先本地 +1 并立即上屏，图标/气泡马上出现；随后再联网校正。
+        if (paragraphNum > 0) {
+            val base = previous?.counts?.get(paragraphNum)
+                ?: ChapterProvider.getReviewCount(paragraphNum)
+            val bumped = (previous ?: ReviewSummaryResult(emptyMap(), emptyMap())).copy(
+                counts = (previous?.counts ?: emptyMap()) + (paragraphNum to base + 1)
+            )
+            synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = bumped }
+            applyReviewSummary(key, chapterIndex, bumped)
+        }
         // 作废在途的统计响应，避免旧结果覆盖刚刷新的数据。
-        reviewSummaryRequestToken++
-        loadNostrReviewSummaryIfNeeded()
+        val token = ++reviewSummaryRequestToken
+        // 中继写入有延迟，稍后再拉，避免刚发出去就回查导致计数被旧值覆盖。
+        handler.postDelayed({
+            if (token == reviewSummaryRequestToken) {
+                loadNostrReviewSummaryIfNeeded()
+            }
+        }, REVIEW_SUMMARY_REFRESH_DELAY_MS)
     }
 
     /**
@@ -2760,7 +2779,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         observeEvent<String>(EventBus.TIME_CHANGED) { readView.upTime() }
         observeEvent<Int>(EventBus.BATTERY_CHANGED) { readView.upBattery(it) }
         observeEvent<String>(EventBus.REFRESH_REVIEW_SUMMARY) {
-            refreshReviewSummaryAfterPublish()
+            refreshReviewSummaryAfterPublish(it.toIntOrNull() ?: 0)
         }
         observeEvent<Boolean>(EventBus.MEDIA_BUTTON) {
             if (it) {
