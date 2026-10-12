@@ -278,8 +278,26 @@ object NostrReviewPublisher {
                 signature = signed.getString("sig")
             )
         ) { "Signer returned an invalid Nostr signature" }
-        val acceptedRelays = NostrNip46Transport.publishAndCollect(publishTargets(session, extraRelays), signed)
-        return Published(signed, acceptedRelays)
+        val outcome = NostrNip46Transport.publishAndCollect(publishTargets(session, extraRelays), signed)
+        logPublishOutcome(kind, signed.getString("id"), outcome)
+        return Published(signed, outcome.acceptedRelays)
+    }
+
+    /** 发布结果日志：只打 kind/id/中继与简短原因，不涉签名/密文。 */
+    private fun logPublishOutcome(kind: Int, eventId: String, outcome: PublishOutcome) {
+        val failures = outcome.results.filterNot { it.accepted }
+        val failureText = if (failures.isEmpty()) {
+            ""
+        } else {
+            " 失败=[" + failures.joinToString(", ") {
+                "${relayHost(it.relay)}:${it.reason ?: "unknown"}"
+            } + "]"
+        }
+        AppLog.put(
+            "Nostr 发布 kind=$kind id=$eventId 接受=${outcome.acceptedRelays.size}/" +
+                "${outcome.results.size}$failureText",
+            tag = "Nostr"
+        )
     }
 
     private fun jsonTagsToLists(tags: JSONArray): List<List<String>> =

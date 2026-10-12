@@ -36,9 +36,20 @@ internal val nostrWebSocketClient by lazy {
     }.build()
 }
 
+/** 单个中继的发布结果：accepted=true 时 reason 为 null；否则 reason 为拒绝或失败原因。 */
+internal data class RelayPublishResult(val relay: String, val accepted: Boolean, val reason: String?)
+
+/** 一次发布的整体结果：被接受的中继集合 + 每个中继的结构化结果（顺序与发布目标一致）。 */
+internal data class PublishOutcome(
+    val acceptedRelays: Set<String>,
+    val results: List<RelayPublishResult>
+)
+
 object NostrNip46Transport {
 
     private const val NIP46_REQUEST_TIMEOUT_MILLIS = 65_000L
+    /** 传输层失败重试时额外给的宽限（与 Amethyst 一致）。 */
+    private const val RELAY_RETRY_GRACE_MILLIS = 5_000L
     private const val NIP46_MAX_RETRIES = 1
     private const val NIP46_RETRY_DELAY_MILLIS = 2_000L
 
@@ -48,34 +59,87 @@ object NostrNip46Transport {
     }
 
     /**
-     * 向各中继发布事件，返回实际接受（返回 OK=true）的中继集合。
+     * 向各中继发布事件，返回被接受（返回 OK=true）的中继集合，以及每个中继的结构化结果。
      * 语义与 [publish] 一致：失败中继忽略，有任一接受即算成功，全部失败才抛异常。
+     * 传输层失败（未连上/掉线/静默/超时）会对该中继多给 [RELAY_RETRY_GRACE_MILLIS] 宽限重试一次；
+     * 中继明确回包拒绝（["OK", id, false, ...]）不重试。
      */
     suspend fun publishAndCollect(
         relays: List<String>,
         event: JSONObject,
         timeoutMillis: Long = 15_000
-    ): Set<String> {
+    ): PublishOutcome {
         val validRelays = relays.distinct().filter { relay -> relay.startsWith("wss://", true) }
         require(validRelays.isNotEmpty()) { "No valid Relay available for publishing" }
         val eventId = event.optString("id").takeIf { it.isNotBlank() }
             ?: throw IllegalArgumentException("Cannot publish an unsigned event")
         val results = coroutineScope {
             validRelays.map { relay ->
-                async(Dispatchers.IO) {
-                    relay to runCatching { publishToRelay(relay, event, eventId, timeoutMillis) }
-                }
+                async(Dispatchers.IO) { publishToRelayWithRetry(relay, event, eventId, timeoutMillis) }
             }.awaitAll()
         }
-        val accepted = results.filter { (_, result) -> result.getOrDefault(false) }
-            .map { (relay, _) -> relay }
+        val accepted = results.filter { it.accepted }
+            .map { it.relay }
             .toSet()
+        // 语义不变：有任一接受即算成功，全部不接受才抛。
         if (accepted.isEmpty()) {
-            throw results.firstNotNullOfOrNull { (_, result) -> result.exceptionOrNull() }
-                ?: IllegalStateException("No Relay accepted the Nostr event")
+            val relayErrors = results.associate { it.relay to it.reasonOrDefault() }
+            throw NostrRelayException(
+                relayFailureMessage("No Relay accepted the Nostr event", validRelays, relayErrors)
+            )
         }
-        return accepted
+        return PublishOutcome(accepted, results)
     }
+
+    /**
+     * 单中继发布（含一次传输层失败重试）。返回结构化结果，不抛（协程取消除外）。
+     * 「中继明确拒绝」与「传输层没回应」在重试策略上区分：前者不重试，后者重试一次。
+     */
+    private suspend fun publishToRelayWithRetry(
+        relay: String,
+        event: JSONObject,
+        eventId: String,
+        timeoutMillis: Long
+    ): RelayPublishResult {
+        val first = runCatching { publishToRelay(relay, event, eventId, timeoutMillis) }
+        first.getOrNull()?.let { return RelayPublishResult(relay, accepted = true, reason = null) }
+        val failure = first.exceptionOrNull()!!
+        // runCatching 连协程取消一起吞掉：真正的取消必须原样重抛（TimeoutCancellationException 是本次超时，不算）。
+        failure.rethrowIfCancelled()
+        // 中继明确回包拒绝：这是它的真实答复，不重试。
+        if (failure is RelayRejectedException) {
+            return RelayPublishResult(relay, accepted = false, reason = failure.reason())
+        }
+        AppLog.put(
+            "Nostr publish relay ${relayHost(relay)} 传输层失败，重试一次(+${RELAY_RETRY_GRACE_MILLIS}ms): " +
+                failure.publishFailureReason(timeoutMillis),
+            tag = "Nostr"
+        )
+        val retryTimeout = timeoutMillis + RELAY_RETRY_GRACE_MILLIS
+        val retry = runCatching { publishToRelay(relay, event, eventId, retryTimeout) }
+        retry.getOrNull()?.let { return RelayPublishResult(relay, accepted = true, reason = null) }
+        val retryFailure = retry.exceptionOrNull()!!
+        retryFailure.rethrowIfCancelled()
+        val reason = if (retryFailure is RelayRejectedException) {
+            retryFailure.reason()
+        } else {
+            retryFailure.publishFailureReason(retryTimeout)
+        }
+        return RelayPublishResult(relay, accepted = false, reason = reason)
+    }
+
+    private fun RelayPublishResult.reasonOrDefault(): String = reason ?: "no response"
+
+    /** 只重抛真正的协程取消：超时（TimeoutCancellationException）属于失败，不能当取消处理。 */
+    private fun Throwable.rethrowIfCancelled() {
+        if (this is CancellationException && this !is TimeoutCancellationException) throw this
+    }
+
+    private fun RelayRejectedException.reason(): String = message ?: "relay rejected the event"
+
+    private fun Throwable.publishFailureReason(timeoutMillis: Long): String =
+        if (this is TimeoutCancellationException) "timed out after ${timeoutMillis}ms"
+        else localizedMessage ?: toString()
 
     private suspend fun publishToRelay(
         relay: String,
@@ -110,7 +174,7 @@ object NostrNip46Transport {
                                         webSocket.close(1000, "publish acknowledged")
                                         if (accepted) continuation.resume(true)
                                         else continuation.resumeWithException(
-                                            IllegalStateException(
+                                            RelayRejectedException(
                                                 message.optString(3, "Relay rejected event")
                                             )
                                         )
@@ -514,3 +578,9 @@ object NostrNip46Transport {
  */
 class NostrRelayException(message: String, cause: Throwable? = null) :
     IllegalStateException(message, cause)
+
+/**
+ * 中继对发布事件的明确拒绝：回包 ["OK", id, false, ...]。
+ * 与传输层失败（未连上/掉线/静默/超时）区分，用于决定是否重试。
+ */
+private class RelayRejectedException(message: String) : IllegalStateException(message)
