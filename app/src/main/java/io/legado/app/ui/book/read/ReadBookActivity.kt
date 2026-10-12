@@ -169,11 +169,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.htmlunit.corejs.javascript.NativeArray
 import org.htmlunit.corejs.javascript.Scriptable
+import org.json.JSONObject
 import io.legado.app.data.entities.delete
 import io.legado.app.data.entities.getFileName
 import io.legado.app.data.entities.getUseReplaceRule
 import io.legado.app.data.entities.migrateTo
 import io.legado.app.data.entities.save
+
+/** 段评统计落盘缓存的存活时间与保留窗口（读过 5 章后旧章自动失效）。 */
+private const val DISK_SUMMARY_TTL_SECONDS = 3 * 24 * 60 * 60
+private const val DISK_SUMMARY_CHAPTER_WINDOW = 6
+private const val DISK_SUMMARY_KIND_NATIVE = "js"
+private const val DISK_SUMMARY_KIND_NOSTR = "nostr"
 
 /**
  * 阅读界面
@@ -309,6 +316,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
     private val nostrReviewSummaryLoadingKeys = HashSet<String>()
     private val reviewSummaryPrefetchingKeys = HashSet<String>()
+    private val reviewSummaryDiskCache by lazy { ACache.get("review_summary") }
     private val nostrReviewPreferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == PreferKey.nostrReview) {
             if (!AppConfig.nostrReviewEnabled) {
@@ -1849,6 +1857,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         synchronized(reviewSummaryCache) {
             reviewSummaryCache.remove(key)
         }
+        removeDiskReviewSummary(DISK_SUMMARY_KIND_NATIVE, key)
         applyReviewSummary(key, chapterIndex, ReviewSummaryResult(emptyMap(), emptyMap()))
     }
 
@@ -1899,6 +1908,12 @@ class ReadBookActivity : BaseReadBookActivity(),
                 prefetchAdjacentReviewSummary(book, source, reviewRule, chapterIndex)
                 return
             }
+        readDiskReviewSummary(DISK_SUMMARY_KIND_NATIVE, key)?.let { diskCached ->
+            synchronized(reviewSummaryCache) { reviewSummaryCache[key] = diskCached }
+            applyReviewSummary(key, chapterIndex, diskCached)
+            prefetchAdjacentReviewSummary(book, source, reviewRule, chapterIndex)
+            return
+        }
         reviewSummaryLoadingKey = key
         val requestToken = ++reviewSummaryRequestToken
         if (reviewSummaryAppliedKey != key) {
@@ -1973,6 +1988,16 @@ class ReadBookActivity : BaseReadBookActivity(),
             )
             return
         }
+        readDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key)?.let { diskCached ->
+            synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = diskCached }
+            applyReviewSummary(
+                key,
+                chapterIndex,
+                synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
+                    ?: ReviewSummaryResult(emptyMap(), emptyMap())
+            )
+            return
+        }
         synchronized(nostrReviewSummaryLoadingKeys) {
             if (!nostrReviewSummaryLoadingKeys.add(key)) return
         }
@@ -1998,6 +2023,8 @@ class ReadBookActivity : BaseReadBookActivity(),
             synchronized(nostrReviewSummaryCache) {
                 nostrReviewSummaryCache[key] = result
             }
+            writeDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key, result)
+            pruneDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, currentBook, ReadBook.durChapterIndex)
             applyReviewSummary(
                 key,
                 chapterIndex,
@@ -2024,6 +2051,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         synchronized(nostrReviewSummaryCache) {
             nostrReviewSummaryCache.remove(key)
         }
+        removeDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key)
         synchronized(nostrReviewSummaryLoadingKeys) {
             nostrReviewSummaryLoadingKeys.remove(key)
         }
@@ -2080,6 +2108,8 @@ class ReadBookActivity : BaseReadBookActivity(),
                 synchronized(reviewSummaryCache) {
                     reviewSummaryCache[key] = result
                 }
+                writeDiskReviewSummary(DISK_SUMMARY_KIND_NATIVE, key, result)
+                pruneDiskReviewSummary(DISK_SUMMARY_KIND_NATIVE, curBook, ReadBook.durChapterIndex)
                 applyReviewSummary(key, chapterIndex, result)
             } else {
                 clearNativeReviewSummary()
@@ -2215,6 +2245,40 @@ class ReadBookActivity : BaseReadBookActivity(),
             ?: ReadBook.bookSource?.getKey().orEmpty()
         return "$sourceKey|${book.bookUrl}#$chapterIndex"
     }
+
+    /** 段评统计的落盘缓存：进程重启/重进仍可命中；TTL 由 ACache 控制。 */
+    private fun readDiskReviewSummary(kind: String, key: String): ReviewSummaryResult? {
+        val json = reviewSummaryDiskCache.getAsJSONObject(diskSummaryKey(kind, key)) ?: return null
+        val countsJson = json.optJSONObject("counts") ?: return null
+        val keysJson = json.optJSONObject("keys") ?: JSONObject()
+        val counts = countsJson.keys().asSequence()
+            .mapNotNull { name -> name.toIntOrNull()?.let { paragraphId -> paragraphId to countsJson.optInt(name) } }
+            .toMap()
+        val keys = keysJson.keys().asSequence().associateWith { keysJson.optString(it) }
+        return ReviewSummaryResult(counts, keys)
+    }
+
+    private fun writeDiskReviewSummary(kind: String, key: String, result: ReviewSummaryResult) {
+        val countsJson = JSONObject()
+        result.counts.forEach { (paragraphId, count) -> countsJson.put(paragraphId.toString(), count) }
+        val keysJson = JSONObject()
+        result.keys.forEach { (paragraphId, reviewKey) -> keysJson.put(paragraphId.toString(), reviewKey) }
+        val json = JSONObject().put("counts", countsJson).put("keys", keysJson)
+        reviewSummaryDiskCache.put(diskSummaryKey(kind, key), json, DISK_SUMMARY_TTL_SECONDS)
+    }
+
+    private fun removeDiskReviewSummary(kind: String, key: String) {
+        reviewSummaryDiskCache.remove(diskSummaryKey(kind, key))
+    }
+
+    /** 读过 5 章后旧章自动失效：只保留当前章 ±5 章内的统计缓存。 */
+    private fun pruneDiskReviewSummary(kind: String, book: Book, chapterIndex: Int) {
+        listOf(chapterIndex - DISK_SUMMARY_CHAPTER_WINDOW, chapterIndex + DISK_SUMMARY_CHAPTER_WINDOW)
+            .filter { it >= 0 }
+            .forEach { removeDiskReviewSummary(kind, buildReviewSummaryKey(book, it)) }
+    }
+
+    private fun diskSummaryKey(kind: String, key: String) = "$kind|$key"
 
     private fun releaseReviewSummaryLoadingKey(key: String) {
         if (reviewSummaryLoadingKey == key) {
