@@ -31,22 +31,39 @@ internal object NostrReviewDetailCache {
 
     fun get(key: String): List<ReviewDetailItem>? {
         synchronized(memoryCache) {
-            memoryCache[key]?.takeIf { it.isNotEmpty() }?.let { return it }
+            memoryCache[key]?.let { cached ->
+                val filtered = cached.withoutPendingItems()
+                if (filtered.isNotEmpty()) return filtered
+            }
         }
         val json = diskCache.getAsString(key) ?: return null
-        val items = detailItemsFromJson(json)?.takeIf { it.isNotEmpty() } ?: return null
+        val items = detailItemsFromJson(json)?.withoutPendingItems() ?: return null
+        if (items.isEmpty()) return null
         synchronized(memoryCache) { memoryCache[key] = items }
         return items
     }
 
     fun put(key: String, items: List<ReviewDetailItem>) {
-        if (items.isEmpty()) return
-        val snapshot = ArrayList(items)
+        val snapshot = items.withoutPendingItems()
+        if (snapshot.isEmpty()) return
         synchronized(memoryCache) { memoryCache[key] = snapshot }
         runCatching {
             diskCache.put(key, detailItemsToJson(snapshot), DETAIL_CACHE_TTL_SECONDS)
         }
     }
+
+    /**
+     * 本地乐观占位项(pendingState != null)只在当前弹窗内有效，发布成功后会被链上真实评论取代；
+     * 一旦被写进缓存，重开该段落时就会与真实评论重复上屏，故读写两侧都要剔除。递归处理 replies。
+     */
+    private fun List<ReviewDetailItem>.withoutPendingItems(): List<ReviewDetailItem> =
+        mapNotNull { item ->
+            when {
+                item.pendingState != null -> null
+                item.replies.isEmpty() -> item
+                else -> item.copy(replies = item.replies.withoutPendingItems())
+            }
+        }
 
     fun toItems(items: List<NostrReviewClient.Comment>): List<ReviewDetailItem> =
         items.map { it.toDetailItem() }
