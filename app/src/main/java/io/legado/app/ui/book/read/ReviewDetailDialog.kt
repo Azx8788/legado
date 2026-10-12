@@ -328,12 +328,36 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         binding.toolBar.addView(action, layoutParams)
     }
 
+    /** 发布失败的草稿：按 书|章节|段落|(回复父评论) 存，成功后清除。 */
+    private val reviewDraftCache by lazy { ACache.get("nostr_review_drafts") }
+
+    private fun reviewDraftKey(kind: String, extra: String = ""): String? {
+        val book = ReadBook.book ?: return null
+        return "$kind|${book.bookUrl}|${ReadBook.durChapterIndex}|$paragraphNum|$extra"
+    }
+
+    private fun readReviewDraft(key: String?): String? =
+        key?.let { reviewDraftCache.getAsString(it) }?.takeIf { it.isNotBlank() }
+
+    private fun saveReviewDraft(key: String?, text: String) {
+        if (key == null || text.isBlank()) return
+        reviewDraftCache.put(key, text, REVIEW_DRAFT_TTL_SECONDS)
+    }
+
+    private fun clearReviewDraft(key: String?) {
+        if (key == null) return
+        reviewDraftCache.remove(key)
+    }
+
     private fun showNostrCommentEditor() {
+        val draftKey = reviewDraftKey("comment")
         val editBinding = io.legado.app.databinding.DialogEditTextBinding.inflate(layoutInflater).apply {
             editView.hint = getString(R.string.nostr_comment_hint)
             editView.minLines = 3
             editView.maxLines = 8
             editView.setSingleLine(false)
+            // 上次发布失败留下的草稿优先回填
+            readReviewDraft(draftKey)?.let { editView.setText(it) }
         }
 
         val dialog = MaterialAlertDialogBuilder(requireContext())
@@ -344,10 +368,15 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             .create()
 
         dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            positive.setOnClickListener {
                 val comment = editBinding.editView.text?.toString().orEmpty().trim()
                 if (comment.isBlank()) return@setOnClickListener
-                binding.rotateLoading.visible()
+                // 发布中：改名并禁用按钮，避免重复点击；弹窗保持打开以显示进度
+                positive.isEnabled = false
+                positive.text = getString(R.string.nostr_comment_publishing)
+                editBinding.editView.isEnabled = false
+                saveReviewDraft(draftKey, comment)
                 lifecycleScope.launch {
                     val result = runCatching {
                         val book = ReadBook.book ?: error("No book is open")
@@ -368,14 +397,16 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         }
                     }.onFailure { if (it is CancellationException) throw it }
                     result.onSuccess {
-                        binding.rotateLoading.gone()
+                        clearReviewDraft(draftKey)
                         dialog.dismiss()
                         loadDetailPage(paragraphNum, 1, append = false)
                         // 通知阅读页刷新段评统计,让「首评」气泡(-1 占位)变为真实评论数。
                         postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                     }.onFailure {
-                        binding.rotateLoading.gone()
-                        dialog.dismiss()
+                        // 失败保留内容为草稿，恢复按钮以便重试
+                        positive.isEnabled = true
+                        positive.text = getString(R.string.nostr_comment_publish)
+                        editBinding.editView.isEnabled = true
                         context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
                     }
                 }
@@ -1010,6 +1041,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         const val TYPE_MORE = 1
         private const val NOSTR_MORE_PAGE = "nostr-more"
         private const val DETAIL_CACHE_TTL_SECONDS = 24 * 60 * 60
+        private const val REVIEW_DRAFT_TTL_SECONDS = 30 * 24 * 60 * 60
         const val PAYLOAD_AUDIO_STATE = "review_audio_state"
         private var lastHeightRatio = DEFAULT_HEIGHT_RATIO
 
@@ -1440,11 +1472,13 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             val parentAuthor = item.nostrAuthorPubkey?.takeIf { it.isNotBlank() } ?: return
             val rootId = item.nostrRootExcerptId?.takeIf { it.isNotBlank() } ?: return
             val rootAuthor = item.nostrRootExcerptPubkey?.takeIf { it.isNotBlank() } ?: return
+            val draftKey = reviewDraftKey("reply", parentId)
             val editBinding = io.legado.app.databinding.DialogEditTextBinding.inflate(layoutInflater).apply {
                 editView.hint = getString(R.string.nostr_comment_hint)
                 editView.minLines = 3
                 editView.maxLines = 8
                 editView.setSingleLine(false)
+                readReviewDraft(draftKey)?.let { editView.setText(it) }
             }
             val dialog = MaterialAlertDialogBuilder(requireContext())
                 .setTitle(getString(R.string.nostr_comment_reply))
@@ -1454,9 +1488,14 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 .create()
 
             dialog.setOnShowListener {
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                positive.setOnClickListener {
                     val content = editBinding.editView.text?.toString().orEmpty().trim()
                     if (content.isBlank()) return@setOnClickListener
+                    positive.isEnabled = false
+                    positive.text = getString(R.string.nostr_comment_publishing)
+                    editBinding.editView.isEnabled = false
+                    saveReviewDraft(draftKey, content)
                     lifecycleScope.launch {
                         val result = runCatching {
                             val book = ReadBook.book ?: error("No book is open")
@@ -1472,12 +1511,15 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             }
                         }.onFailure { if (it is CancellationException) throw it }
                         result.onSuccess {
+                            clearReviewDraft(draftKey)
                             dialog.dismiss()
                             loadDetailPage(paragraphNum, 1, append = false)
                             // 回复也同样计入图标计数，需刷新本章统计
                             postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                         }.onFailure {
-                            dialog.dismiss()
+                            positive.isEnabled = true
+                            positive.text = getString(R.string.nostr_comment_publish)
+                            editBinding.editView.isEnabled = true
                             context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
                         }
                     }
