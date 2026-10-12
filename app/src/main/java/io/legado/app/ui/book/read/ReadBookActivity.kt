@@ -176,6 +176,9 @@ import io.legado.app.data.entities.getUseReplaceRule
 import io.legado.app.data.entities.migrateTo
 import io.legado.app.data.entities.save
 
+/** 选中态下点气泡时，临时气泡延迟多久清除（留出点击时间）。 */
+private const val TRANSIENT_REVIEW_LINGER_MS = 2000L
+
 /** 段评统计落盘缓存的存活时间与保留窗口（读过 5 章后旧章自动失效）。 */
 private const val DISK_SUMMARY_TTL_SECONDS = 3 * 24 * 60 * 60
 private const val DISK_SUMMARY_CHAPTER_WINDOW = 6
@@ -930,14 +933,19 @@ class ReadBookActivity : BaseReadBookActivity(),
         syncTransientReviewBubble()
     }
 
-    /** 选中「无段评」的段落时临时给出评论气泡；取消选择时由 [onCancelSelect] 清除。 */
+    /** 选中「无段评」的段落时临时给出评论气泡；取消选择后延后清除，留出点击时间。 */
     private fun syncTransientReviewBubble() {
+        handler.removeCallbacks(clearTransientReviewRunnable)
         val target = binding.readView.curPage.selectedReviewTarget()
         if (target == null || target.count > 0) {
             ChapterProvider.clearTransientReviewColumn()
             return
         }
         ChapterProvider.showTransientReviewColumn(target.chapterIndex, target.reviewId)
+    }
+
+    private val clearTransientReviewRunnable by lazy {
+        Runnable { ChapterProvider.clearTransientReviewColumn() }
     }
 
     /**
@@ -947,7 +955,9 @@ class ReadBookActivity : BaseReadBookActivity(),
         cursorLeft.invisible()
         cursorRight.invisible()
         textActionMenu.dismiss()
-        ChapterProvider.clearTransientReviewColumn()
+        // 选中态下点气泡要先经 ReadView→clickReviewColumn 命中，所以延后清除，别立刻消失
+        handler.removeCallbacks(clearTransientReviewRunnable)
+        handler.postDelayed(clearTransientReviewRunnable, TRANSIENT_REVIEW_LINGER_MS)
     }
 
     override fun onLongScreenshotTouchEvent(event: MotionEvent): Boolean {

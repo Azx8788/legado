@@ -352,6 +352,11 @@ class PageView(context: Context) : FrameLayout(context) {
         return binding.contentTextView.click(x, y - headerHeight)
     }
 
+    /** 仅命中段评气泡的点击（选中态下用）。 */
+    fun clickReviewColumn(x: Float, y: Float): Boolean {
+        return binding.contentTextView.clickReviewColumn(x, y - headerHeight)
+    }
+
     /**
      * 长按事件
      */

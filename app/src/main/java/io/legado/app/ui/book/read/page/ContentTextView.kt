@@ -211,6 +211,20 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     }
 
     /**
+     * 仅处理「点中段评气泡」：选中态下点气泡时用，避免被取消选择的默认流程吃掉。
+     */
+    fun clickReviewColumn(x: Float, y: Float): Boolean {
+        var handled = false
+        touch(x, y) { _, _, _, textLine, column ->
+            if (column is ReviewColumn) {
+                callBack.onReviewClick(resolveReviewId(textLine), column.count)
+                handled = true
+            }
+        }
+        return handled
+    }
+
+    /**
      * 长按
      */
     fun longPress(
