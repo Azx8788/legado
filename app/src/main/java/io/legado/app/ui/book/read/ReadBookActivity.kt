@@ -951,13 +951,15 @@ class ReadBookActivity : BaseReadBookActivity(),
     /**
      * 取消文字选择
      */
-    override fun onCancelSelect() = binding.run {
-        cursorLeft.invisible()
-        cursorRight.invisible()
-        textActionMenu.dismiss()
-        // 选中态下点气泡要先经 ReadView→clickReviewColumn 命中，所以延后清除，别立刻消失
-        handler.removeCallbacks(clearTransientReviewRunnable)
-        handler.postDelayed(clearTransientReviewRunnable, TRANSIENT_REVIEW_LINGER_MS)
+    override fun onCancelSelect() {
+        binding.run {
+            cursorLeft.invisible()
+            cursorRight.invisible()
+            textActionMenu.dismiss()
+            // 选中态下点气泡要先经 ReadView→clickReviewColumn 命中，所以延后清除，别立刻消失
+            handler.removeCallbacks(clearTransientReviewRunnable)
+            handler.postDelayed(clearTransientReviewRunnable, TRANSIENT_REVIEW_LINGER_MS)
+        }
     }
 
     override fun onLongScreenshotTouchEvent(event: MotionEvent): Boolean {
