@@ -185,6 +185,14 @@ object NostrReviewClient {
         if (it is CancellationException) throw it
     }.getOrNull()
 
+    /** 按事件 id 在当前读取中继上取回事件（取回不到返回 null）。 */
+    suspend fun fetchEventById(id: String): NostrEvent? = runCatching {
+        queryEvents(JSONObject().put("ids", JSONArray().put(id)).put("limit", 1))
+            .firstOrNull()
+    }.onFailure {
+        if (it is CancellationException) throw it
+    }.getOrNull()
+
     /**
      * 拉取 kind 0 账号资料（头像/昵称）；同一 pubkey 取 created_at 最新的一条。
      */

@@ -42,8 +42,11 @@ object NostrReviewPublisher {
                     .put("content", paragraph)
                     .put("created_at", createdAt)
                     .put("tags", excerptTags(bookIdentifier, context))
-                signAndPublish(session, keyPair, excerpt).getString("id")
-                    .also { AppLog.put("段评摘录新建 id=$it", tag = "Nostr") }
+                val signedExcerpt = signAndPublish(session, keyPair, excerpt)
+                val id = signedExcerpt.getString("id")
+                AppLog.put("段评摘录新建 id=$id", tag = "Nostr")
+                ensureExcerptPersisted(session, signedExcerpt)
+                id
             }
         val commentEvent = JSONObject()
             .put("kind", 1111)
@@ -51,6 +54,28 @@ object NostrReviewPublisher {
             .put("created_at", createdAt + 1)
             .put("tags", commentTags(bookIdentifier, excerptId, session.userPubkey))
         signAndPublish(session, keyPair, commentEvent)
+    }
+
+    /**
+     * 新摘录发布后确认当前读取中继能取回；取不回则原样重发一次已签名事件（不重新签名），
+     * 第二次仍取不回即抛异常放弃发布评论，避免产出指向丢失摘录的 1111 悬空引用。
+     */
+    private suspend fun ensureExcerptPersisted(
+        session: NostrSignerStore.Session,
+        signedExcerpt: JSONObject
+    ) {
+        val id = signedExcerpt.getString("id")
+        if (excerptReadable(id)) return
+        NostrNip46Transport.publish(session.relays, signedExcerpt)
+        if (!excerptReadable(id)) {
+            throw IllegalStateException("段评摘录未能持久化，已放弃发布评论")
+        }
+    }
+
+    private suspend fun excerptReadable(id: String): Boolean {
+        val readable = NostrReviewClient.fetchEventById(id) != null
+        AppLog.put("段评摘录校验 id=$id ${if (readable) "可读" else "不可读"}", tag = "Nostr")
+        return readable
     }
 
     suspend fun replyToComment(
