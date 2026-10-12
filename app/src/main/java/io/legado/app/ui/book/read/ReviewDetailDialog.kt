@@ -141,6 +141,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         item.time?.let { put("time", it) }
         item.likeCount?.let { put("like", it) }
         if (item.likedByMe) put("liked", true)
+        item.myReactionId?.let { put("myReaction", it) }
         item.replyCount?.let { put("replyCount", it) }
         put("replies", JSONArray().apply { item.replies.forEach { put(detailItemToJson(it)) } })
     }
@@ -162,6 +163,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             time = json.optString("time").takeIf { it.isNotEmpty() },
             likeCount = if (json.has("like")) json.optInt("like") else null,
             likedByMe = json.optBoolean("liked"),
+            myReactionId = json.optString("myReaction").takeIf { it.isNotEmpty() },
             replyCount = if (json.has("replyCount")) json.optInt("replyCount") else null,
             replies = (0 until repliesJson.length()).mapNotNull { index ->
                 repliesJson.optJSONObject(index)?.let { detailItemFromJson(it) }
@@ -863,15 +865,16 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             time = time,
             likeCount = likeCount,
             likedByMe = likedByMe,
+            myReactionId = myReactionId,
             replyCount = replies.size,
             replies = replies.map { it.toReviewDetailItem() }
         )
     }
 
     /** 本地乐观更新某条评论的点赞态与计数（失败时反向调用以回滚）。 */
-    private fun applyLikeState(commentId: String, liked: Boolean) {
+    private fun applyLikeState(commentId: String, liked: Boolean, reactionId: String? = null) {
         for (index in detailItems.indices) {
-            val updated = detailItems[index].withLikeState(commentId, liked)
+            val updated = detailItems[index].withLikeState(commentId, liked, reactionId)
             if (updated !== detailItems[index]) {
                 detailItems[index] = updated
                 break
@@ -882,17 +885,27 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
 
     private fun ReviewDetailItem.withLikeState(
         commentId: String,
-        liked: Boolean
+        liked: Boolean,
+        reactionId: String?
     ): ReviewDetailItem {
         if (id == commentId) {
-            val delta = if (liked) 1 else -1
+            // 仅在点赞态真正变化时动计数（发布成功后回填 reaction id 时不应再加一）
+            val delta = when {
+                liked == likedByMe -> 0
+                liked -> 1
+                else -> -1
+            }
             val newCount = ((likeCount ?: 0) + delta).coerceAtLeast(0)
-            return copy(likedByMe = liked, likeCount = newCount)
+            return copy(
+                likedByMe = liked,
+                likeCount = newCount,
+                myReactionId = if (liked) (reactionId ?: myReactionId) else null
+            )
         }
         if (replies.isEmpty()) return this
         var changed = false
         val newReplies = replies.map { reply ->
-            val updated = reply.withLikeState(commentId, liked)
+            val updated = reply.withLikeState(commentId, liked, reactionId)
             if (updated !== reply) changed = true
             updated
         }
@@ -985,6 +998,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val time: String?,
         val likeCount: Int?,
         val likedByMe: Boolean = false,
+        val myReactionId: String? = null,
         val replyCount: Int?,
         val replies: List<ReviewDetailItem>
     )
@@ -1003,6 +1017,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val time: String?,
         val likeCount: Int?,
         val likedByMe: Boolean = false,
+        val myReactionId: String? = null,
         val isReply: Boolean,
         val itemType: Int = TYPE_NORMAL,
         val parentKey: String? = null,
@@ -1066,6 +1081,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         time = time,
         likeCount = likeCount,
         likedByMe = likedByMe,
+        myReactionId = myReactionId,
         isReply = isReply,
         parentKey = parentKey
     )
@@ -1503,10 +1519,16 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 if (item.itemType != TYPE_MORE && !item.id.isNullOrBlank() &&
                     !item.nostrAuthorPubkey.isNullOrBlank() && NostrSignerStore.load() != null
                 ) {
-                    if (item.likedByMe) return@setOnClickListener
-                    // 乐观更新：先本地显示为已赞、计数+1；同步失败再回滚
-                    applyLikeState(item.id, liked = true)
-                    publishNostrReaction(item.id, item.nostrAuthorPubkey)
+                    if (item.likedByMe) {
+                        // 取消点赞：先本地回退，再删掉自己那条 reaction，失败则恢复
+                        val reactionId = item.myReactionId
+                        applyLikeState(item.id, liked = false)
+                        deleteNostrReaction(item.id, reactionId)
+                    } else {
+                        // 乐观更新：先本地显示为已赞、计数+1；同步失败再回滚
+                        applyLikeState(item.id, liked = true)
+                        publishNostrReaction(item.id, item.nostrAuthorPubkey)
+                    }
                 }
             }
         }
@@ -1580,9 +1602,27 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         NostrReviewPublisher.reactToComment(commentId, authorPubkey)
                     }
                 }.onFailure { if (it is CancellationException) throw it }
-                result.onFailure {
+                result.onSuccess { reactionId ->
+                    // 记下自己那条 reaction 的 id，再次点击时用它删除
+                    applyLikeState(commentId, liked = true, reactionId = reactionId)
+                }.onFailure {
                     // 远端同步失败：回滚本地点赞态与计数
                     applyLikeState(commentId, liked = false)
+                    context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
+                }
+            }
+        }
+
+        /** 取消点赞：NIP-09 删除自己那条 reaction；失败则恢复点赞态。 */
+        private fun deleteNostrReaction(commentId: String, reactionId: String?) {
+            lifecycleScope.launch {
+                val result = runCatching {
+                    withContext(IO) {
+                        NostrReviewPublisher.deleteReaction(reactionId.orEmpty())
+                    }
+                }.onFailure { if (it is CancellationException) throw it }
+                result.onFailure {
+                    applyLikeState(commentId, liked = true, reactionId = reactionId)
                     context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
                 }
             }

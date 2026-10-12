@@ -12,7 +12,7 @@ import java.util.Locale
 
 object NostrNip46 {
 
-    val paragraphReviewKinds = setOf(9802, 1111, 7)
+    val paragraphReviewKinds = setOf(9802, 1111, 7, 5)
     private val secureRandom = SecureRandom()
 
     data class BunkerConnection(

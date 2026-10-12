@@ -155,7 +155,7 @@ class NostrReviewClientTest {
     @Test
     fun nip46PermissionsLimitSigningToParagraphReviewKinds() {
         assertEquals(
-            "get_public_key,sign_event:9802,sign_event:1111,sign_event:7",
+            "get_public_key,sign_event:9802,sign_event:1111,sign_event:7,sign_event:5",
             NostrNip46.paragraphReviewPermissions
         )
     }

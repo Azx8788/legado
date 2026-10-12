@@ -78,10 +78,10 @@ object NostrReviewPublisher {
         )
     }
 
-    suspend fun reactToComment(commentId: String, authorPubkey: String) {
+    suspend fun reactToComment(commentId: String, authorPubkey: String): String {
         val session = NostrSignerStore.load()
             ?: throw IllegalStateException("Connect a Nostr remote signer before reacting")
-        signAndPublish(
+        val signed = signAndPublish(
             session,
             NostrNip46.ClientKeyPair(session.clientPrivateKey, session.clientPublicKey),
             JSONObject()
@@ -91,6 +91,23 @@ object NostrReviewPublisher {
                 .put(
                     "tags", reactionTags(commentId, authorPubkey)
                 )
+        )
+        return signed.getString("id")
+    }
+
+    /** 取消点赞：按 NIP-09 发 kind 5 删除自己那条 reaction。 */
+    suspend fun deleteReaction(reactionEventId: String) {
+        require(reactionEventId.isNotBlank()) { "Reaction event id is required" }
+        val session = NostrSignerStore.load()
+            ?: throw IllegalStateException("Connect a Nostr remote signer before reacting")
+        signAndPublish(
+            session,
+            NostrNip46.ClientKeyPair(session.clientPrivateKey, session.clientPublicKey),
+            JSONObject()
+                .put("kind", 5)
+                .put("content", "")
+                .put("created_at", System.currentTimeMillis() / 1000)
+                .put("tags", JSONArray().put(JSONArray().put("e").put(reactionEventId)))
         )
     }
 

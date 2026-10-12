@@ -41,6 +41,7 @@ object NostrReviewClient {
         val time: String,
         val likeCount: Int,
         val likedByMe: Boolean = false,
+        val myReactionId: String? = null,
         val replies: List<Comment>
     )
 
@@ -133,6 +134,16 @@ object NostrReviewClient {
                 .mapNotNull { it.tagValues("e").firstOrNull() }
                 .toSet()
         }
+        // 自己那条 reaction 的事件 id，用于再次点击时按 NIP-09 删除
+        val myReactionIds: Map<String, String> = if (myPubkey.isNullOrBlank()) {
+            emptyMap()
+        } else {
+            reactions.filter { it.content == "+" && it.pubkey == myPubkey }
+                .mapNotNull { event ->
+                    event.tagValues("e").firstOrNull()?.let { commentId -> commentId to event.id }
+                }
+                .toMap()
+        }
         val commentsByExcerpt = comments.groupBy { it.rootId }
         val excerptAuthors = matching.associate { it.id to it.pubkey }
         val roots = excerptIds.flatMap { excerptId ->
@@ -145,7 +156,7 @@ object NostrReviewClient {
         val pageSize = 20
         val pageItems = roots.drop((page - 1).coerceAtLeast(0) * pageSize).take(pageSize)
         return Details(
-            items = pageItems.map { it.toComment(likeCounts, likedIds) },
+            items = pageItems.map { it.toComment(likeCounts, likedIds, myReactionIds) },
             hasMore = roots.size > page.coerceAtLeast(1) * pageSize
         )
     }
@@ -380,7 +391,8 @@ object NostrReviewClient {
 
     private fun NostrEvent.toComment(
         likeCounts: Map<String, Int>,
-        likedIds: Set<String> = emptySet()
+        likedIds: Set<String> = emptySet(),
+        myReactionIds: Map<String, String> = emptyMap()
     ): Comment = Comment(
         id = id,
         name = pubkey.take(12).ifBlank { "Nostr" },
@@ -391,7 +403,8 @@ object NostrReviewClient {
         time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(createdAt * 1000)),
         likeCount = likeCounts[id] ?: 0,
         likedByMe = id in likedIds,
-        replies = children.map { it.toComment(likeCounts, likedIds) }
+        myReactionId = myReactionIds[id],
+        replies = children.map { it.toComment(likeCounts, likedIds, myReactionIds) }
     )
 
     private fun normalize(value: String): String = value
