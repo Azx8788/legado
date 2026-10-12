@@ -1,0 +1,23 @@
+package io.legado.app.help.nostr
+
+/**
+ * 段评详情列表条目。原为段评弹窗的私有模型，提升为共享类型以便详情缓存被章节预热复用。
+ */
+internal data class ReviewDetailItem(
+    val id: String?,
+    val avatar: String?,
+    val name: String?,
+    val nostrAuthorPubkey: String? = null,
+    val nostrRootExcerptId: String? = null,
+    val nostrRootExcerptPubkey: String? = null,
+    val badges: List<String>,
+    val content: String?,
+    val imageUrl: String?,
+    val audioUrl: String?,
+    val time: String?,
+    val likeCount: Int?,
+    val likedByMe: Boolean = false,
+    val myReactionId: String? = null,
+    val replyCount: Int?,
+    val replies: List<ReviewDetailItem>
+)

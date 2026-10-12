@@ -62,6 +62,7 @@ import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.motion.MotionTokens
 import io.legado.app.help.nostr.NostrReviewClient
+import io.legado.app.help.nostr.NostrReviewDetailCache
 import io.legado.app.help.nostr.NostrSignerStore
 import io.legado.app.constant.AppPattern
 import io.legado.app.help.source.getSourceType
@@ -106,6 +107,7 @@ import io.legado.app.ui.book.read.HighlightActionMenu.Companion.HL_UNDERLINE
 import io.legado.app.ui.book.read.page.ContentTextView
 import io.legado.app.ui.book.read.page.ReadView
 import io.legado.app.ui.book.read.page.entities.PageDirection
+import io.legado.app.ui.book.read.page.entities.TextChapter
 import io.legado.app.ui.book.read.page.entities.TextPage
 import io.legado.app.ui.book.read.page.provider.ChapterProvider
 import io.legado.app.ui.book.read.page.provider.LayoutProgressListener
@@ -160,6 +162,7 @@ import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.visible
 import io.legado.app.data.entities.rule.ReviewRule
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Dispatchers.Main
 import kotlinx.coroutines.Job
@@ -184,6 +187,9 @@ private const val DISK_SUMMARY_TTL_SECONDS = 3 * 24 * 60 * 60
 private const val DISK_SUMMARY_CHAPTER_WINDOW = 6
 private const val DISK_SUMMARY_KIND_NATIVE = "js"
 private const val DISK_SUMMARY_KIND_NOSTR = "nostr"
+
+/** 单章段评详情预热的段落数上限。 */
+private const val MAX_WARM_PARAGRAPHS = 8
 
 /**
  * 阅读界面
@@ -319,6 +325,7 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
     private val nostrReviewSummaryLoadingKeys = HashSet<String>()
     private val reviewSummaryPrefetchingKeys = HashSet<String>()
+    private val nostrReviewDetailWarmingKeys = HashSet<String>()
     private val reviewSummaryDiskCache by lazy { ACache.get("review_summary") }
     private val nostrReviewPreferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == PreferKey.nostrReview) {
@@ -1998,6 +2005,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
                     ?: ReviewSummaryResult(emptyMap(), emptyMap())
             )
+            warmNostrReviewDetails(book, chapterIndex, textChapter, cached.counts)
             return
         }
         readDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key)?.let { diskCached ->
@@ -2008,6 +2016,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
                     ?: ReviewSummaryResult(emptyMap(), emptyMap())
             )
+            warmNostrReviewDetails(book, chapterIndex, textChapter, diskCached.counts)
         }
         synchronized(nostrReviewSummaryLoadingKeys) {
             if (!nostrReviewSummaryLoadingKeys.add(key)) return
@@ -2042,6 +2051,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
                     ?: ReviewSummaryResult(emptyMap(), emptyMap())
             )
+            warmNostrReviewDetails(currentBook, chapterIndex, textChapter, summary.counts)
         }.onError {
             synchronized(nostrReviewSummaryLoadingKeys) {
                 nostrReviewSummaryLoadingKeys.remove(key)
@@ -2087,9 +2097,57 @@ class ReadBookActivity : BaseReadBookActivity(),
             val result = ReviewSummaryResult(summary.counts, emptyMap())
             synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = result }
             writeDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key, result)
+            warmNostrReviewDetails(book, chapterIndex, textChapter, summary.counts)
         }.onError {
             synchronized(reviewSummaryPrefetchingKeys) {
                 reviewSummaryPrefetchingKeys.remove(key)
+            }
+        }
+    }
+
+    /**
+     * 打开章节时预热当前章/下一章的 Nostr 段评详情首页：打开弹窗可直接命中缓存，不再等网络。
+     * 仅预热有评论的段落（-1 首评占位不算），单章上限 [MAX_WARM_PARAGRAPHS] 个。
+     */
+    private fun warmNostrReviewDetails(
+        book: Book,
+        chapterIndex: Int,
+        textChapter: TextChapter,
+        counts: Map<Int, Int>
+    ) {
+        if (!AppConfig.nostrReviewEnabled) return
+        val paragraphs = textChapter.paragraphTexts
+        if (paragraphs.isEmpty()) return
+        val targets = counts.filter { it.value > 0 }.keys.take(MAX_WARM_PARAGRAPHS)
+        if (targets.isEmpty()) return
+        val dedupeKey = "$chapterIndex|${book.bookUrl}"
+        synchronized(nostrReviewDetailWarmingKeys) {
+            if (!nostrReviewDetailWarmingKeys.add(dedupeKey)) return
+        }
+        Coroutine.async(lifecycleScope, IO) {
+            targets.forEach { paragraphNum ->
+                val cacheKey = NostrReviewDetailCache.key(book.bookUrl, chapterIndex, paragraphNum)
+                if (NostrReviewDetailCache.contains(cacheKey)) return@forEach
+                runCatching {
+                    val details = NostrReviewClient.loadDetails(
+                        book,
+                        textChapter.chapter.title,
+                        paragraphs,
+                        paragraphNum,
+                        1
+                    )
+                    NostrReviewDetailCache.put(
+                        cacheKey,
+                        NostrReviewDetailCache.toItems(details.items)
+                    )
+                }.onFailure {
+                    if (it is CancellationException) throw it
+                    AppLog.put("预热 Nostr 段评详情失败\n${it.localizedMessage}", it)
+                }
+            }
+        }.onFinally {
+            synchronized(nostrReviewDetailWarmingKeys) {
+                nostrReviewDetailWarmingKeys.remove(dedupeKey)
             }
         }
     }
