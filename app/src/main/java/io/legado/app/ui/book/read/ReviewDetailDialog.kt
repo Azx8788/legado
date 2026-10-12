@@ -140,6 +140,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         item.audioUrl?.let { put("audio", it) }
         item.time?.let { put("time", it) }
         item.likeCount?.let { put("like", it) }
+        if (item.likedByMe) put("liked", true)
         item.replyCount?.let { put("replyCount", it) }
         put("replies", JSONArray().apply { item.replies.forEach { put(detailItemToJson(it)) } })
     }
@@ -160,6 +161,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             audioUrl = json.optString("audio").takeIf { it.isNotEmpty() },
             time = json.optString("time").takeIf { it.isNotEmpty() },
             likeCount = if (json.has("like")) json.optInt("like") else null,
+            likedByMe = json.optBoolean("liked"),
             replyCount = if (json.has("replyCount")) json.optInt("replyCount") else null,
             replies = (0 until repliesJson.length()).mapNotNull { index ->
                 repliesJson.optJSONObject(index)?.let { detailItemFromJson(it) }
@@ -860,9 +862,41 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             audioUrl = null,
             time = time,
             likeCount = likeCount,
+            likedByMe = likedByMe,
             replyCount = replies.size,
             replies = replies.map { it.toReviewDetailItem() }
         )
+    }
+
+    /** 本地乐观更新某条评论的点赞态与计数（失败时反向调用以回滚）。 */
+    private fun applyLikeState(commentId: String, liked: Boolean) {
+        for (index in detailItems.indices) {
+            val updated = detailItems[index].withLikeState(commentId, liked)
+            if (updated !== detailItems[index]) {
+                detailItems[index] = updated
+                break
+            }
+        }
+        renderUiItems()
+    }
+
+    private fun ReviewDetailItem.withLikeState(
+        commentId: String,
+        liked: Boolean
+    ): ReviewDetailItem {
+        if (id == commentId) {
+            val delta = if (liked) 1 else -1
+            val newCount = ((likeCount ?: 0) + delta).coerceAtLeast(0)
+            return copy(likedByMe = liked, likeCount = newCount)
+        }
+        if (replies.isEmpty()) return this
+        var changed = false
+        val newReplies = replies.map { reply ->
+            val updated = reply.withLikeState(commentId, liked)
+            if (updated !== reply) changed = true
+            updated
+        }
+        return if (changed) copy(replies = newReplies) else this
     }
 
     /** 列表涉及到的 Nostr 作者（含回复），用于批量拉资料。 */
@@ -950,6 +984,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val audioUrl: String?,
         val time: String?,
         val likeCount: Int?,
+        val likedByMe: Boolean = false,
         val replyCount: Int?,
         val replies: List<ReviewDetailItem>
     )
@@ -967,6 +1002,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val audioUrl: String?,
         val time: String?,
         val likeCount: Int?,
+        val likedByMe: Boolean = false,
         val isReply: Boolean,
         val itemType: Int = TYPE_NORMAL,
         val parentKey: String? = null,
@@ -1029,6 +1065,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         audioUrl = audioUrl,
         time = time,
         likeCount = likeCount,
+        likedByMe = likedByMe,
         isReply = isReply,
         parentKey = parentKey
     )
@@ -1412,6 +1449,10 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             if (!item.isReply) {
                 binding.ivLike.visible()
                 binding.llLikeArea.visible()
+                // 已赞（含本地乐观态）用强调色
+                binding.ivLike.setColorFilter(
+                    if (item.likedByMe) context.getCompatColor(R.color.accent) else secondaryColor
+                )
                 val likeCount = item.likeCount
                 if (likeCount != null && likeCount > 0) {
                     binding.tvLikeCount.text = likeCount.toString()
@@ -1462,6 +1503,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 if (item.itemType != TYPE_MORE && !item.id.isNullOrBlank() &&
                     !item.nostrAuthorPubkey.isNullOrBlank() && NostrSignerStore.load() != null
                 ) {
+                    if (item.likedByMe) return@setOnClickListener
+                    // 乐观更新：先本地显示为已赞、计数+1；同步失败再回滚
+                    applyLikeState(item.id, liked = true)
                     publishNostrReaction(item.id, item.nostrAuthorPubkey)
                 }
             }
@@ -1536,9 +1580,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         NostrReviewPublisher.reactToComment(commentId, authorPubkey)
                     }
                 }.onFailure { if (it is CancellationException) throw it }
-                result.onSuccess {
-                    loadDetailPage(paragraphNum, 1, append = false)
-                }.onFailure {
+                result.onFailure {
+                    // 远端同步失败：回滚本地点赞态与计数
+                    applyLikeState(commentId, liked = false)
                     context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
                 }
             }
