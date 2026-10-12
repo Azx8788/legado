@@ -156,6 +156,14 @@ class App : Application() {
         registerActivityLifecycleCallbacks(LifecycleHelp)
         defaultSharedPreferences.registerOnSharedPreferenceChangeListener(AppConfig)
         initRhino()
+        //已登录 Nostr：启动后独立协程同步本账号资料（头像/昵称），不受下面启动流程是否出错影响
+        Coroutine.async {
+            NostrSignerStore.load()?.let { session ->
+                NostrProfileStore.sync(listOf(session.userPubkey))
+            }
+        }.onError {
+            AppLog.put("同步 Nostr 账号资料失败\n${it.localizedMessage}", it)
+        }
         Coroutine.async {
             LogUtils.init(this@App)
             LogUtils.d("App", "onCreate")
@@ -169,12 +177,6 @@ class App : Application() {
             }
             //预下载Cronet so
             Cronet.preDownload()
-            //已登录 Nostr：启动后同步本账号资料（头像/昵称），评论列表优先展示
-            runCatching {
-                NostrSignerStore.load()?.let { session ->
-                    NostrProfileStore.sync(listOf(session.userPubkey))
-                }
-            }
             createNotificationChannels()
             LiveEventBus.config()
                 .lifecycleObserverAlwaysActive(true)

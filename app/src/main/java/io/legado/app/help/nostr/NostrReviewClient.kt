@@ -176,13 +176,17 @@ object NostrReviewClient {
             .toList()
         if (authors.isEmpty()) return emptyList()
         val latest = HashMap<String, NostrEvent>()
+        // 资料（kind 0）不能只依赖「会话+已配置」中继：作者的资料可能只存在于其它公开中继，
+        // 这里额外带上内置种子中继；命中情况写日志便于排查。
+        val profileRelays = (relays() + NostrRelays.seeds()).distinct()
         authors.chunked(50).forEach { batch ->
             val events = runCatching {
                 queryEvents(
                     JSONObject()
                         .put("kinds", JSONArray().put(0))
                         .put("authors", JSONArray(batch))
-                        .put("limit", batch.size)
+                        .put("limit", batch.size),
+                    activeRelayList = profileRelays
                 )
             }.onFailure {
                 if (it is CancellationException) throw it
@@ -196,6 +200,12 @@ object NostrReviewClient {
             }
         }
         val now = System.currentTimeMillis()
+        if (latest.isEmpty()) {
+            AppLog.put(
+                "Nostr 账号资料未命中\n中继=${profileRelays.joinToString(" ")}\n作者=${authors.joinToString(" ")}",
+                tag = "Nostr"
+            )
+        }
         return latest.values.mapNotNull { event ->
             val content = runCatching { JSONObject(event.content) }.getOrNull()
                 ?: return@mapNotNull null
@@ -323,8 +333,11 @@ object NostrReviewClient {
         }.distinctBy { it.id }
     }
 
-    private suspend fun queryEvents(filter: JSONObject): List<NostrEvent> = coroutineScope {
-        val activeRelays = relays()
+    private suspend fun queryEvents(
+        filter: JSONObject,
+        activeRelayList: List<String> = relays()
+    ): List<NostrEvent> = coroutineScope {
+        val activeRelays = activeRelayList
         val expectedKinds = filter.optJSONArray("kinds")?.let { kinds ->
             (0 until kinds.length()).map { kinds.optInt(it) }.toSet()
         }.orEmpty()
