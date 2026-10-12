@@ -873,6 +873,27 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         fun onLongScreenshotTouchEvent(event: MotionEvent): Boolean
     }
 
+    /** 选区起点所在段落的段评入口信息；未选择或无有效段落时返回 null。 */
+    fun selectedReviewTarget(): ReviewTarget? {
+        if (!selectStart.isSelected()) return null
+        val page = relativePage(selectStart.relativePagePos)
+        val line = page.getLine(selectStart.lineIndex) ?: return null
+        val reviewId = resolveReviewId(line)
+        if (reviewId <= 0) return null
+        return ReviewTarget(
+            chapterIndex = page.chapterIndex,
+            reviewId = reviewId,
+            count = ChapterProvider.getReviewCount(
+                paragraphNum = line.paragraphNum,
+                isTitle = line.isTitle,
+                titleOffset = line.reviewTitleOffset,
+                chapterIndex = page.chapterIndex
+            )
+        )
+    }
+
+    data class ReviewTarget(val chapterIndex: Int, val reviewId: Int, val count: Int)
+
     private fun resolveReviewId(textLine: TextLine): Int {
         if (textLine.isTitle) return -1
         val reviewId = textLine.paragraphNum - textLine.reviewTitleOffset

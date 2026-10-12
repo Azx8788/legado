@@ -1013,6 +1013,43 @@ object ChapterProvider {
         refreshReviewColumns()
     }
 
+    @Volatile
+    private var transientReview: Pair<Int, Int>? = null
+
+    /**
+     * 选中「没有段评」的段落时，临时显示一个可点击的空气泡作为评论入口；
+     * chapterIndex/reviewId 与 [getReviewCount] 口径一致(reviewId = 段落号 - titleOffset)。
+     */
+    fun showTransientReviewColumn(chapterIndex: Int, reviewId: Int) {
+        if (reviewId <= 0) return
+        val target = chapterIndex to reviewId
+        if (transientReview == target) return
+        transientReview = target
+        refreshReviewColumns()
+    }
+
+    fun clearTransientReviewColumn() {
+        if (transientReview == null) return
+        transientReview = null
+        refreshReviewColumns()
+    }
+
+    /**
+     * 段落实际要落的段评数：>0 是正常气泡；-1 只在被选中的无段评段落上临时出现；0 不显示。
+     */
+    private fun resolveReviewCount(
+        paragraphNum: Int,
+        isTitle: Boolean,
+        titleOffset: Int,
+        chapterIndex: Int,
+    ): Int {
+        val count = getReviewCount(paragraphNum, isTitle, titleOffset, chapterIndex)
+        if (count > 0) return count
+        val target = transientReview ?: return 0
+        if (target.first != chapterIndex) return 0
+        return if (paragraphNum - titleOffset == target.second) -1 else 0
+    }
+
     private fun refreshReviewColumns() {
         refreshReviewColumns(ReadBook.prevTextChapter)
         refreshReviewColumns(ReadBook.curTextChapter)
@@ -1030,15 +1067,14 @@ object ChapterProvider {
             var lineIndex = 0
             while (lineIndex < lineSize) {
                 val line = lines.getOrNull(lineIndex) ?: break
-                val count = getReviewCount(
+                val count = resolveReviewCount(
                     paragraphNum = line.paragraphNum,
                     isTitle = line.isTitle,
                     titleOffset = line.reviewTitleOffset,
                     chapterIndex = chapterIndex
                 )
                 var changed = false
-                // count == -1 表示该段落可写但还没有人评论（登录远程签名器后），
-                // 需要显示一个空的评论气泡作为「首评」入口；count == 0 才是完全无段评。
+                // count == -1 是选中空段落时的临时气泡；0 才完全无段评。
                 val shouldShow = count != 0 && line.isParagraphEnd
                 if (!shouldShow) {
                     if (line.removeColumns { it is ReviewColumn }) {
@@ -1094,13 +1130,12 @@ object ChapterProvider {
         titleOffset: Int? = null,
         chapterIndex: Int = ReadBook.durChapterIndex,
     ) {
-        val count = getReviewCount(
-            paragraphNum,
-            textLine.isTitle,
-            titleOffset ?: textLine.reviewTitleOffset,
-            chapterIndex
+        val count = resolveReviewCount(
+            paragraphNum = paragraphNum,
+            isTitle = textLine.isTitle,
+            titleOffset = titleOffset ?: textLine.reviewTitleOffset,
+            chapterIndex = chapterIndex
         )
-        // count == -1 是可写的空评论气泡，也要落到列上，不能当 0 忽略。
         if (count == 0) return
         textLine.columns.forEach { column ->
             if (column is ReviewColumn) {
@@ -1115,13 +1150,13 @@ object ChapterProvider {
         chapterIndex: Int = ReadBook.durChapterIndex,
     ) {
         if (textLine.columns.any { it is ReviewColumn }) return
-        val count = getReviewCount(
-            textLine.paragraphNum,
-            textLine.isTitle,
-            titleOffset ?: textLine.reviewTitleOffset,
-            chapterIndex
+        val count = resolveReviewCount(
+            paragraphNum = textLine.paragraphNum,
+            isTitle = textLine.isTitle,
+            titleOffset = titleOffset ?: textLine.reviewTitleOffset,
+            chapterIndex = chapterIndex
         )
-        // count == -1 是可写的空评论气泡，也要显示出来。
+        // count == -1 是选中空段落时的临时气泡，也要显示出来。
         if (count == 0) return
         val reviewColumn = ReviewColumn(start = 0f, end = 0f, count = count)
         updateReviewColumnLayout(reviewColumn, textLine)

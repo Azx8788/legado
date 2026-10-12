@@ -909,6 +909,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         cursorLeft.visible(true)
         textMenuPosition.x = x
         textMenuPosition.y = top
+        syncTransientReviewBubble()
     }
 
     /**
@@ -918,6 +919,17 @@ class ReadBookActivity : BaseReadBookActivity(),
         cursorRight.x = x
         cursorRight.y = y
         cursorRight.visible(true)
+        syncTransientReviewBubble()
+    }
+
+    /** 选中「无段评」的段落时临时给出评论气泡；取消选择时由 [onCancelSelect] 清除。 */
+    private fun syncTransientReviewBubble() {
+        val target = binding.readView.curPage.selectedReviewTarget()
+        if (target == null || target.count > 0) {
+            ChapterProvider.clearTransientReviewColumn()
+            return
+        }
+        ChapterProvider.showTransientReviewColumn(target.chapterIndex, target.reviewId)
     }
 
     /**
@@ -927,6 +939,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         cursorLeft.invisible()
         cursorRight.invisible()
         textActionMenu.dismiss()
+        ChapterProvider.clearTransientReviewColumn()
     }
 
     override fun onLongScreenshotTouchEvent(event: MotionEvent): Boolean {
@@ -1108,6 +1121,13 @@ class ReadBookActivity : BaseReadBookActivity(),
                 } else {
                     ReadBook.addHighlight(highlight)
                     binding.root.post { showHighlightActionMenu(highlight, anchorX, anchorY) }
+                }
+                return true
+            }
+
+            R.id.menu_review -> {
+                binding.readView.curPage.selectedReviewTarget()?.let { target ->
+                    onReviewClick(target.reviewId, target.count.takeIf { it > 0 } ?: -1)
                 }
                 return true
             }
