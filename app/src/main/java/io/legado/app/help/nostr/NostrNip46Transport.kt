@@ -64,7 +64,7 @@ object NostrNip46Transport {
      * 传输层失败（未连上/掉线/静默/超时）会对该中继多给 [RELAY_RETRY_GRACE_MILLIS] 宽限重试一次；
      * 中继明确回包拒绝（["OK", id, false, ...]）不重试。
      */
-    suspend fun publishAndCollect(
+    internal suspend fun publishAndCollect(
         relays: List<String>,
         event: JSONObject,
         timeoutMillis: Long = 15_000
