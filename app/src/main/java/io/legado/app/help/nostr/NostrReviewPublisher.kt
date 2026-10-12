@@ -1,5 +1,6 @@
 package io.legado.app.help.nostr
 
+import io.legado.app.constant.AppConst
 import io.legado.app.data.entities.Book
 import org.json.JSONArray
 import org.json.JSONObject
@@ -33,25 +34,14 @@ object NostrReviewPublisher {
             .put("kind", 9802)
             .put("content", paragraph)
             .put("created_at", createdAt)
-            .put("tags", JSONArray()
-                .put(JSONArray().put("i").put(bookIdentifier))
-                .put(JSONArray().put("r").put(chapterUrl))
-                .put(JSONArray().put("context").put(context)))
+            .put("tags", excerptTags(bookIdentifier, chapterUrl, context))
         val signedExcerpt = signAndPublish(session, keyPair, excerpt)
         val excerptId = signedExcerpt.getString("id")
-        val commentTags = JSONArray()
-            .put(JSONArray().put("I").put(bookIdentifier))
-            .put(JSONArray().put("E").put(excerptId))
-            .put(JSONArray().put("K").put("9802"))
-            .put(JSONArray().put("P").put(session.userPubkey))
-            .put(JSONArray().put("e").put(excerptId))
-            .put(JSONArray().put("k").put("9802"))
-            .put(JSONArray().put("p").put(session.userPubkey))
         val commentEvent = JSONObject()
             .put("kind", 1111)
             .put("content", text)
             .put("created_at", createdAt + 1)
-            .put("tags", commentTags)
+            .put("tags", commentTags(bookIdentifier, excerptId, session.userPubkey))
         signAndPublish(session, keyPair, commentEvent)
     }
 
@@ -68,14 +58,6 @@ object NostrReviewPublisher {
         val session = NostrSignerStore.load()
             ?: throw IllegalStateException("Connect a Nostr remote signer before replying")
         val createdAt = System.currentTimeMillis() / 1000
-        val tags = JSONArray()
-            .put(JSONArray().put("I").put(NostrReviewClient.bookIdentifier(book.name, book.author)))
-            .put(JSONArray().put("E").put(rootExcerptId))
-            .put(JSONArray().put("K").put("9802"))
-            .put(JSONArray().put("P").put(rootExcerptPubkey))
-            .put(JSONArray().put("e").put(parentCommentId))
-            .put(JSONArray().put("k").put("1111"))
-            .put(JSONArray().put("p").put(parentAuthorPubkey))
         signAndPublish(
             session,
             NostrNip46.ClientKeyPair(session.clientPrivateKey, session.clientPublicKey),
@@ -83,7 +65,16 @@ object NostrReviewPublisher {
                 .put("kind", 1111)
                 .put("content", text)
                 .put("created_at", createdAt)
-                .put("tags", tags)
+                .put(
+                    "tags",
+                    replyTags(
+                        bookIdentifier = NostrReviewClient.bookIdentifier(book.name, book.author),
+                        rootExcerptId = rootExcerptId,
+                        rootExcerptPubkey = rootExcerptPubkey,
+                        parentCommentId = parentCommentId,
+                        parentAuthorPubkey = parentAuthorPubkey
+                    )
+                )
         )
     }
 
@@ -97,11 +88,59 @@ object NostrReviewPublisher {
                 .put("kind", 7)
                 .put("content", "+")
                 .put("created_at", System.currentTimeMillis() / 1000)
-                .put("tags", JSONArray()
-                    .put(JSONArray().put("e").put(commentId))
-                    .put(JSONArray().put("p").put(authorPubkey)))
+                .put(
+                    "tags", reactionTags(commentId, authorPubkey)
+                )
         )
     }
+
+    /** NIP-89 客户端标记；名字取项目现成常量 AppConst.APP_TAG，不写字面量。 */
+    private fun clientTag(): JSONArray = JSONArray().put("client").put(AppConst.APP_TAG)
+
+    internal fun excerptTags(
+        bookIdentifier: String,
+        chapterUrl: String,
+        context: String
+    ): JSONArray = JSONArray()
+        .put(JSONArray().put("i").put(bookIdentifier))
+        .put(JSONArray().put("r").put(chapterUrl))
+        .put(JSONArray().put("context").put(context))
+        .put(clientTag())
+
+    internal fun commentTags(
+        bookIdentifier: String,
+        excerptId: String,
+        userPubkey: String
+    ): JSONArray = JSONArray()
+        .put(JSONArray().put("I").put(bookIdentifier))
+        .put(JSONArray().put("E").put(excerptId))
+        .put(JSONArray().put("K").put("9802"))
+        .put(JSONArray().put("P").put(userPubkey))
+        .put(JSONArray().put("e").put(excerptId))
+        .put(JSONArray().put("k").put("9802"))
+        .put(JSONArray().put("p").put(userPubkey))
+        .put(clientTag())
+
+    internal fun replyTags(
+        bookIdentifier: String,
+        rootExcerptId: String,
+        rootExcerptPubkey: String,
+        parentCommentId: String,
+        parentAuthorPubkey: String
+    ): JSONArray = JSONArray()
+        .put(JSONArray().put("I").put(bookIdentifier))
+        .put(JSONArray().put("E").put(rootExcerptId))
+        .put(JSONArray().put("K").put("9802"))
+        .put(JSONArray().put("P").put(rootExcerptPubkey))
+        .put(JSONArray().put("e").put(parentCommentId))
+        .put(JSONArray().put("k").put("1111"))
+        .put(JSONArray().put("p").put(parentAuthorPubkey))
+        .put(clientTag())
+
+    internal fun reactionTags(commentId: String, authorPubkey: String): JSONArray = JSONArray()
+        .put(JSONArray().put("e").put(commentId))
+        .put(JSONArray().put("p").put(authorPubkey))
+        .put(clientTag())
 
     private suspend fun signAndPublish(
         session: NostrSignerStore.Session,

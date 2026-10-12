@@ -1,6 +1,7 @@
 package io.legado.app.help.nostr
 
 import fr.acinq.secp256k1.Secp256k1
+import io.legado.app.constant.AppConst
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.SecureRandom
@@ -106,7 +107,7 @@ object NostrNip46 {
             validRelays.forEach { add("relay=${it.urlEncoded()}") }
             add("secret=${secret.urlEncoded()}")
             add("perms=${paragraphReviewPermissions.urlEncoded()}")
-            add("name=${"Legado".urlEncoded()}")
+            add("name=${AppConst.APP_TAG.urlEncoded()}")
         }.joinToString("&")
         return NostrConnectToken(
             uri = "nostrconnect://${keyPair.publicKey}?$query",
@@ -127,7 +128,7 @@ object NostrNip46 {
             connection.signerPubkey,
             connection.secret.orEmpty(),
             paragraphReviewPermissions,
-            JSONObject().put("name", "Legado").toString()
+            JSONObject().put("name", AppConst.APP_TAG).toString()
         ),
         createdAt = createdAt
     )

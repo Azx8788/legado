@@ -1,5 +1,6 @@
 package io.legado.app.help.nostr
 
+import io.legado.app.constant.AppConst
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -251,4 +252,21 @@ class NostrReviewClientTest {
     }
 
     private fun String.hexToBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+    @Test
+    fun publishedEventTagsCarryNip89ClientTag() {
+        val clientTag = listOf("client", AppConst.APP_TAG)
+        val tagArrays = listOf(
+            NostrReviewPublisher.excerptTags("book-id", "https://source.example/chapter", "ctx"),
+            NostrReviewPublisher.commentTags("book-id", "excerpt-id", "user-pubkey"),
+            NostrReviewPublisher.replyTags(
+                "book-id", "excerpt-id", "excerpt-pubkey", "parent-id", "parent-pubkey"
+            ),
+            NostrReviewPublisher.reactionTags("comment-id", "author-pubkey")
+        )
+        tagArrays.forEach { tags ->
+            val last = tags.getJSONArray(tags.length() - 1)
+            assertEquals(clientTag, (0 until last.length()).map { last.getString(it) })
+        }
+    }
 }
