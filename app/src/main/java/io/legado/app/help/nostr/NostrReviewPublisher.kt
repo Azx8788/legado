@@ -1,6 +1,7 @@
 package io.legado.app.help.nostr
 
 import io.legado.app.constant.AppConst
+import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.Book
 import org.json.JSONArray
 import org.json.JSONObject
@@ -33,13 +34,17 @@ object NostrReviewPublisher {
             .filter { it.isNotBlank() }
             .joinToString(" ")
 
-        val excerpt = JSONObject()
-            .put("kind", 9802)
-            .put("content", paragraph)
-            .put("created_at", createdAt)
-            .put("tags", excerptTags(bookIdentifier, context))
-        val signedExcerpt = signAndPublish(session, keyPair, excerpt)
-        val excerptId = signedExcerpt.getString("id")
+        val excerptId = NostrReviewClient.findParagraphExcerptId(book, chapterTitle, paragraphs, paragraphIndex)
+            ?.also { AppLog.put("段评摘录复用 id=$it", tag = "Nostr") }
+            ?: run {
+                val excerpt = JSONObject()
+                    .put("kind", 9802)
+                    .put("content", paragraph)
+                    .put("created_at", createdAt)
+                    .put("tags", excerptTags(bookIdentifier, context))
+                signAndPublish(session, keyPair, excerpt).getString("id")
+                    .also { AppLog.put("段评摘录新建 id=$it", tag = "Nostr") }
+            }
         val commentEvent = JSONObject()
             .put("kind", 1111)
             .put("content", text)

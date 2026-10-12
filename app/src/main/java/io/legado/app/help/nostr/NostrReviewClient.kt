@@ -165,6 +165,26 @@ object NostrReviewClient {
         )
     }
 
+    /** 该段落在当前中继上已有的摘录事件 id；没有返回 null。 */
+    suspend fun findParagraphExcerptId(
+        book: Book,
+        chapterTitle: String,
+        paragraphs: List<String>,
+        paragraphIndex: Int
+    ): String? = runCatching {
+        val excerpts = queryEvents(
+            JSONObject()
+                .put("kinds", JSONArray().put(9802))
+                .put("#i", JSONArray(bookIdentifiers(book.name, book.author)))
+                .put("limit", 1000)
+        )
+        matchParagraphs(excerpts, paragraphs, chapterTitle)[paragraphIndex]
+            ?.maxByOrNull { it.createdAt }
+            ?.id
+    }.onFailure {
+        if (it is CancellationException) throw it
+    }.getOrNull()
+
     /**
      * 拉取 kind 0 账号资料（头像/昵称）；同一 pubkey 取 created_at 最新的一条。
      */
@@ -203,6 +223,11 @@ object NostrReviewClient {
         if (latest.isEmpty()) {
             AppLog.put(
                 "Nostr 账号资料未命中\n中继=${profileRelays.joinToString(" ")}\n作者=${authors.joinToString(" ")}",
+                tag = "Nostr"
+            )
+        } else {
+            AppLog.put(
+                "Nostr 账号资料命中 ${latest.size} 条：${latest.keys.joinToString(" ")}",
                 tag = "Nostr"
             )
         }

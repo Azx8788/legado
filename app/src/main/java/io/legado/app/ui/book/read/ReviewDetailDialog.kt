@@ -483,6 +483,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             reviewDraftKey("comment")
         }
         lifecycleScope.launch {
+            AppLog.put("段评重发开始 p=$paragraphNum id=$localId", tag = "Nostr")
             val result = runCatching {
                 val book = ReadBook.book ?: error("No book is open")
                 withContext(IO) {
@@ -514,13 +515,16 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 }
             }.onFailure { if (it is CancellationException) throw it }
             result.onSuccess {
+                AppLog.put("段评发布成功 id=$localId", tag = "Nostr")
                 clearReviewDraft(draftKey)
                 removeLocalPendingItem(localId)
                 loadDetailPage(paragraphNum, 1, append = false)
                 postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
             }.onFailure {
-                // 保留占位与已有草稿，等下次点击重试
+                AppLog.put("段评发布失败 id=$localId：${it.localizedMessage}", it, tag = "Nostr")
+                // 保留占位并回写草稿，等下次点击重试
                 setPendingState(localId, PENDING_FAILED)
+                saveReviewDraft(draftKey, args.text)
                 context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
             }
         }
@@ -554,6 +558,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 localPendingPublish[localId] = PublishArgs(text = comment)
                 dialog.dismiss()
                 lifecycleScope.launch {
+                    AppLog.put("段评发布开始 p=$paragraphNum id=$localId", tag = "Nostr")
                     val result = runCatching {
                         val book = ReadBook.book ?: error("No book is open")
                         val chapterIndex = ReadBook.durChapterIndex
@@ -573,12 +578,14 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         }
                     }.onFailure { if (it is CancellationException) throw it }
                     result.onSuccess {
+                        AppLog.put("段评发布成功 id=$localId", tag = "Nostr")
                         clearReviewDraft(draftKey)
                         removeLocalPendingItem(localId)
                         loadDetailPage(paragraphNum, 1, append = false)
                         // 通知阅读页刷新段评统计,让「首评」气泡(-1 占位)变为真实评论数。
                         postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
                     }.onFailure {
+                        AppLog.put("段评发布失败 id=$localId：${it.localizedMessage}", it, tag = "Nostr")
                         // 弹窗已关闭，保留占位并转为草稿态，点它重发
                         setPendingState(localId, PENDING_FAILED)
                         saveReviewDraft(draftKey, comment)
@@ -1714,6 +1721,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                     )
                     dialog.dismiss()
                     lifecycleScope.launch {
+                        AppLog.put("段评发布开始 p=$paragraphNum id=$localId", tag = "Nostr")
                         val result = runCatching {
                             val book = ReadBook.book ?: error("No book is open")
                             withContext(IO) {
@@ -1728,12 +1736,14 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             }
                         }.onFailure { if (it is CancellationException) throw it }
                         result.onSuccess {
+                            AppLog.put("段评发布成功 id=$localId", tag = "Nostr")
                             clearReviewDraft(draftKey)
                             removeLocalPendingItem(localId)
                             loadDetailPage(paragraphNum, 1, append = false)
                             // 回复也同样计入图标计数，需刷新本章统计
                             postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
                         }.onFailure {
+                            AppLog.put("段评发布失败 id=$localId：${it.localizedMessage}", it, tag = "Nostr")
                             // 弹窗已关闭，保留占位并转为草稿态，点它重发
                             setPendingState(localId, PENDING_FAILED)
                             saveReviewDraft(draftKey, content)
