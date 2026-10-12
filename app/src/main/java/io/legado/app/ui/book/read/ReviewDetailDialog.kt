@@ -393,7 +393,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         withContext(IO) {
                             NostrReviewPublisher.postParagraphComment(
                                 book = book,
-                                chapterUrl = chapter.url,
+                                chapterTitle = chapter.title,
                                 paragraphs = textChapter.paragraphTexts,
                                 paragraphIndex = paragraphNum,
                                 comment = comment
@@ -673,7 +673,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             val hasParagraph = !paragraphTexts.getOrNull(paragraphNum - 1).isNullOrBlank()
             val nostrResult = if (AppConfig.nostrReviewEnabled && hasParagraph) {
                 runCatching {
-                    NostrReviewClient.loadDetails(book, chapter.url, paragraphTexts, paragraphNum, page)
+                    NostrReviewClient.loadDetails(book, chapter.title, paragraphTexts, paragraphNum, page)
                 }.onFailure {
                     if (it is CancellationException) throw it
                     AppLog.put("加载 Nostr 段评详情失败\n${it.localizedMessage}", it)

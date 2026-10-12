@@ -2019,7 +2019,7 @@ class ReadBookActivity : BaseReadBookActivity(),
             if (chapter.isVolume) return@async null
             NostrReviewClient.loadSummary(
                 book,
-                chapter.url,
+                chapter.title,
                 paragraphs,
                 allowCreatingComments = NostrSignerStore.load() != null
             )
@@ -2075,7 +2075,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         Coroutine.async(lifecycleScope, IO) {
             NostrReviewClient.loadSummary(
                 book,
-                textChapter.chapter.url,
+                textChapter.chapter.title,
                 paragraphs,
                 allowCreatingComments = NostrSignerStore.load() != null
             )

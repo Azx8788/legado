@@ -17,6 +17,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.security.MessageDigest
+import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -28,6 +29,9 @@ import kotlin.coroutines.resumeWithException
 object NostrReviewClient {
 
     private fun relays(): List<String> = NostrRelays.forReading()
+
+    /** 章节标题作匹配信号的最小长度（归一化后），过短/通用的标题不计分。 */
+    private const val TITLE_MIN_LENGTH = 4
 
     data class Summary(val counts: Map<Int, Int>)
 
@@ -52,26 +56,26 @@ object NostrReviewClient {
 
     suspend fun loadSummary(
         book: Book,
-        chapterUrl: String,
+        chapterTitle: String,
         paragraphs: List<String>,
         allowCreatingComments: Boolean = false
     ): Summary {
         if (paragraphs.isEmpty()) return Summary(emptyMap())
-        val bookTag = bookIdentifier(book.name, book.author)
+        val bookTags = bookIdentifiers(book.name, book.author)
         // 中继全部不可用时降级为「暂无摘录」:已登录用户仍能看到可首评的占位图标,
         // 而不是因为查询异常整章都没有段评入口(发布时的中继错误会单独提示)。
         val excerpts = runCatching {
             queryEvents(
                 JSONObject()
                     .put("kinds", JSONArray().put(9802))
-                    .put("#i", JSONArray().put(bookTag))
+                    .put("#i", JSONArray(bookTags))
                     .put("limit", 1000)
             )
         }.onFailure {
             if (it is CancellationException) throw it
             AppLog.put("查询 Nostr 段落摘录失败\n${it.localizedMessage}", it, tag = "Nostr")
         }.getOrDefault(emptyList())
-        val matched = matchParagraphs(excerpts, paragraphs, chapterUrl)
+        val matched = matchParagraphs(excerpts, paragraphs, chapterTitle)
         val excerptIds = matched.values.flatten().map { it.id }.distinct()
         if (excerptIds.isEmpty()) {
             val writableParagraphs = if (allowCreatingComments) {
@@ -104,7 +108,7 @@ object NostrReviewClient {
 
     suspend fun loadDetails(
         book: Book,
-        chapterUrl: String,
+        chapterTitle: String,
         paragraphs: List<String>,
         paragraphIndex: Int,
         page: Int
@@ -115,10 +119,10 @@ object NostrReviewClient {
         val excerpts = queryEvents(
             JSONObject()
                 .put("kinds", JSONArray().put(9802))
-                .put("#i", JSONArray().put(bookIdentifier(book.name, book.author)))
+                .put("#i", JSONArray(bookIdentifiers(book.name, book.author)))
                 .put("limit", 1000)
         )
-        val matching = matchParagraphs(excerpts, paragraphs, chapterUrl)[paragraphIndex].orEmpty()
+        val matching = matchParagraphs(excerpts, paragraphs, chapterTitle)[paragraphIndex].orEmpty()
         if (matching.isEmpty()) return Details(emptyList(), false)
         val excerptIds = matching.map { it.id }.distinct()
         val comments = queryComments(excerptIds)
@@ -205,18 +209,46 @@ object NostrReviewClient {
         }
     }
 
+    const val BOOK_KIND = "legado:book"
+
     fun bookIdentifier(name: String, author: String): String {
         val normalizedName = normalize(name).lowercase(Locale.ROOT)
         val normalizedAuthor = normalize(author).lowercase(Locale.ROOT)
-        return "legado:book:${sha256("v1|$normalizedName|$normalizedAuthor")}" 
+        return "$BOOK_KIND:${sha256("v1|$normalizedName|$normalizedAuthor")}"
+    }
+
+    /** v2 书标识：作者在前、值带版本、明文可读可纠错。 */
+    fun bookIdentifierV2(name: String, author: String): String =
+        "$BOOK_KIND:v2|${escapeIdentityPart(normalizeForIdentity(author))}|" +
+            escapeIdentityPart(normalizeForIdentity(name))
+
+    /** 查询用：同时覆盖 v1（历史哈希）与 v2。 */
+    fun bookIdentifiers(name: String, author: String): List<String> =
+        listOf(bookIdentifier(name, author), bookIdentifierV2(name, author))
+
+    private fun escapeIdentityPart(value: String): String =
+        value.replace("\\", "\\\\").replace("|", "\\|")
+
+    /**
+     * v2 标识归一化：NFKC → 去空白(含全角空格) → 小写；全部处理完后若为纯 ASCII 保留标点，
+     * 否则再去标点/符号/分隔/控制字符。发布端与读端必须一致，规则冻结（改动需升版本）。
+     */
+    internal fun normalizeForIdentity(value: String): String {
+        val normalized = Normalizer.normalize(value, Normalizer.Form.NFKC)
+            .replace(Regex("[\\s\u3000]+"), "")
+            .lowercase(Locale.ROOT)
+        if (normalized.all { it.code < 128 }) return normalized
+        return normalized.replace(Regex("[\\p{P}\\p{S}\\p{Z}\\p{C}]"), "")
     }
 
     internal fun matchParagraphs(
         excerpts: List<NostrEvent>,
         paragraphs: List<String>,
-        chapterUrl: String
+        chapterTitle: String
     ): Map<Int, List<NostrEvent>> {
         val normalizedParagraphs = paragraphs.map(::normalize)
+        val identityTitle = normalizeForIdentity(chapterTitle)
+            .takeIf { it.length >= TITLE_MIN_LENGTH }
         val indexesByText = normalizedParagraphs.mapIndexedNotNull { index, paragraph ->
             paragraph.takeIf { it.isNotEmpty() }?.let { it to index }
         }.groupBy({ it.first }, { it.second })
@@ -235,8 +267,11 @@ object NostrReviewClient {
                 candidateIndexes.addAll(indexesByHash[paragraphHash].orEmpty())
             }
             val candidates = candidateIndexes.toList()
-            val context = normalize(event.tagValues("context").firstOrNull().orEmpty())
-            val referenceScore = if (chapterUrl in event.tagValues("r")) 4 else 0
+            val rawContext = event.tagValues("context").firstOrNull().orEmpty()
+            val context = normalize(rawContext)
+            val titleScore = if (
+                identityTitle != null && normalizeForIdentity(rawContext).contains(identityTitle)
+            ) 4 else 0
             val contextScore: (Int) -> Int = { index ->
                 var score = 0
                 normalizedParagraphs.getOrNull(index - 1)?.takeLast(24)
@@ -247,13 +282,13 @@ object NostrReviewClient {
             }
             val selected = if (candidates.size > 1) {
                 val scores = candidates.associateWith { index ->
-                    referenceScore + contextScore(index)
+                    titleScore + contextScore(index)
                 }
                 val bestScore = scores.values.maxOrNull() ?: 0
                 val best = scores.filterValues { it == bestScore }.keys
                 if (bestScore > 0 && best.size == 1) best else candidates
             } else if (candidates.size == 1 && context.isNotEmpty() &&
-                referenceScore == 0 && contextScore(candidates.single()) == 0
+                titleScore == 0 && contextScore(candidates.single()) == 0
             ) {
                 emptyList()
             } else {

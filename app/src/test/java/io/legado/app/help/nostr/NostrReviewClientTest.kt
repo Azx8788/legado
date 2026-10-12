@@ -42,7 +42,6 @@ class NostrReviewClientTest {
             createdAt = 1,
             kind = 9802,
             tags = listOf(
-                listOf("r", "https://other-source.example/chapter"),
                 listOf("context", "sentence establishes the first location. An unmistakable following")
             )
         )
@@ -50,7 +49,7 @@ class NostrReviewClientTest {
         val matches = NostrReviewClient.matchParagraphs(
             listOf(excerpt),
             paragraphs,
-            "https://current-source.example/chapter"
+            chapterTitle = ""
         )
 
         assertTrue(matches.containsKey(2))
@@ -70,7 +69,6 @@ class NostrReviewClientTest {
             createdAt = 1,
             kind = 9802,
             tags = listOf(
-                listOf("r", "https://other-source.example/chapter"),
                 listOf("context", "unrelated words from another chapter's context")
             )
         )
@@ -78,7 +76,7 @@ class NostrReviewClientTest {
         val matches = NostrReviewClient.matchParagraphs(
             listOf(excerpt),
             paragraphs,
-            "https://current-source.example/chapter"
+            chapterTitle = ""
         )
 
         assertFalse(matches.containsKey(2))
@@ -257,7 +255,7 @@ class NostrReviewClientTest {
     fun publishedEventTagsCarryNip89ClientTag() {
         val clientTag = listOf("client", AppConst.APP_TAG)
         val tagArrays = listOf(
-            NostrReviewPublisher.excerptTags("book-id", "https://source.example/chapter", "ctx"),
+            NostrReviewPublisher.excerptTags("book-id", "ctx"),
             NostrReviewPublisher.commentTags("book-id", "excerpt-id", "user-pubkey"),
             NostrReviewPublisher.replyTags(
                 "book-id", "excerpt-id", "excerpt-pubkey", "parent-id", "parent-pubkey"
@@ -268,5 +266,42 @@ class NostrReviewClientTest {
             val last = tags.getJSONArray(tags.length() - 1)
             assertEquals(clientTag, (0 until last.length()).map { last.getString(it) })
         }
+    }
+
+    @Test
+    fun bookIdentifierV2IsAuthorFirstVersionedAndReadable() {
+        val id = NostrReviewClient.bookIdentifierV2("The Book", "Author")
+
+        assertEquals("legado:book:v2|author|thebook", id)
+    }
+
+    @Test
+    fun bookIdentifiersIncludeLegacyHashAndV2() {
+        val ids = NostrReviewClient.bookIdentifiers("The Book", "Author")
+
+        assertEquals(2, ids.size)
+        assertTrue(ids[0].startsWith("legado:book:"))
+        assertFalse(ids[0].startsWith("legado:book:v2"))
+        assertEquals("legado:book:v2|author|thebook", ids[1])
+    }
+
+    @Test
+    fun normalizeForIdentityKeepsAsciiPunctuationAndStripsNonAscii() {
+        assertEquals("ender'sgame", NostrReviewClient.normalizeForIdentity("Ender's Game"))
+        assertEquals("三国演义", NostrReviewClient.normalizeForIdentity("《三国演义》"))
+        assertEquals("deepwork深度工作", NostrReviewClient.normalizeForIdentity("Deep Work　深度工作"))
+    }
+
+    @Test
+    fun excerptTagsCarryKindAndTitleContextWithoutLegacyReference() {
+        val context = "药王庙夜谈 上一段 下一段"
+        val tags = NostrReviewPublisher.excerptTags("legado:book:v2|author|thebook", context)
+        val arrays = (0 until tags.length()).map { tags.getJSONArray(it) }
+
+        assertTrue(arrays.none { it.getString(0) == "r" })
+
+        assertEquals("legado:book:v2|author|thebook", arrays.first { it.getString(0) == "i" }.getString(1))
+        assertEquals("legado:book", arrays.first { it.getString(0) == "k" }.getString(1))
+        assertEquals(context, arrays.first { it.getString(0) == "context" }.getString(1))
     }
 }

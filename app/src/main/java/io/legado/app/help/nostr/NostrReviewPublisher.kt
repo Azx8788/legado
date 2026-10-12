@@ -9,7 +9,7 @@ object NostrReviewPublisher {
 
     suspend fun postParagraphComment(
         book: Book,
-        chapterUrl: String,
+        chapterTitle: String,
         paragraphs: List<String>,
         paragraphIndex: Int,
         comment: String
@@ -25,16 +25,19 @@ object NostrReviewPublisher {
             ?: throw IllegalStateException("Connect a Nostr remote signer before posting")
         val keyPair = NostrNip46.ClientKeyPair(session.clientPrivateKey, session.clientPublicKey)
         val createdAt = System.currentTimeMillis() / 1000
-        val bookIdentifier = NostrReviewClient.bookIdentifier(book.name, book.author)
+        val bookIdentifier = NostrReviewClient.bookIdentifierV2(book.name, book.author)
+        val title = NostrReviewClient.normalizeForIdentity(chapterTitle)
         val previous = paragraphs.getOrNull(paragraphIndex - 2).orEmpty().takeLast(80)
         val next = paragraphs.getOrNull(paragraphIndex).orEmpty().take(80)
-        val context = listOf(previous, next).filter { it.isNotBlank() }.joinToString(" ")
+        val context = listOf(title, previous, next)
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
 
         val excerpt = JSONObject()
             .put("kind", 9802)
             .put("content", paragraph)
             .put("created_at", createdAt)
-            .put("tags", excerptTags(bookIdentifier, chapterUrl, context))
+            .put("tags", excerptTags(bookIdentifier, context))
         val signedExcerpt = signAndPublish(session, keyPair, excerpt)
         val excerptId = signedExcerpt.getString("id")
         val commentEvent = JSONObject()
@@ -68,7 +71,7 @@ object NostrReviewPublisher {
                 .put(
                     "tags",
                     replyTags(
-                        bookIdentifier = NostrReviewClient.bookIdentifier(book.name, book.author),
+                        bookIdentifier = NostrReviewClient.bookIdentifierV2(book.name, book.author),
                         rootExcerptId = rootExcerptId,
                         rootExcerptPubkey = rootExcerptPubkey,
                         parentCommentId = parentCommentId,
@@ -116,11 +119,10 @@ object NostrReviewPublisher {
 
     internal fun excerptTags(
         bookIdentifier: String,
-        chapterUrl: String,
         context: String
     ): JSONArray = JSONArray()
         .put(JSONArray().put("i").put(bookIdentifier))
-        .put(JSONArray().put("r").put(chapterUrl))
+        .put(JSONArray().put("k").put(NostrReviewClient.BOOK_KIND))
         .put(JSONArray().put("context").put(context))
         .put(clientTag())
 
