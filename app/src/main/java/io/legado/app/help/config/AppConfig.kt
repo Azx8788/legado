@@ -459,6 +459,20 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
             appCtx.putPrefInt(PreferKey.nostrRelaySeedVersion, value)
         }
 
+    /**
+     * 从备份恢复的 bunker URI（不含客户端私钥）。因会话密钥存在 AndroidKeyStore，
+     * 跨设备无法直接解密，只能把地址带过来提示用户重新连接签名器；连接成功后清除。
+     */
+    var nostrRestoredBunkerUri: String?
+        get() = appCtx.getPrefString(PreferKey.nostrRestoredBunkerUri)
+        set(value) {
+            if (value.isNullOrBlank()) {
+                appCtx.removePref(PreferKey.nostrRestoredBunkerUri)
+            } else {
+                appCtx.putPrefString(PreferKey.nostrRestoredBunkerUri, value)
+            }
+        }
+
     var tocUiUseReplace: Boolean
         get() = appCtx.getPrefBoolean(PreferKey.tocUiUseReplace)
         set(value) {

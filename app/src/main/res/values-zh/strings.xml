@@ -1270,6 +1270,7 @@ Cron 使用 5 个字段：**分 时 日 月 周**
     <string name="nostr_review_summary">从 Nostr 中继读取公开段评</string>
     <string name="nostr_signer">Nostr 远程签名器</string>
     <string name="nostr_signer_not_connected">未连接</string>
+    <string name="nostr_signer_restored">已从备份恢复账号，需重新连接远程签名器</string>
     <string name="nostr_signer_connect">连接远程签名器</string>
     <string name="nostr_signer_connecting">正在连接签名器</string>
     <string name="nostr_signer_connected">Nostr 签名器已连接</string>

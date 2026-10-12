@@ -356,9 +356,16 @@ class OtherConfigFragment : PreferenceFragment(),
             return
         }
         alert(getString(R.string.nostr_signer_connect)) {
+            val restored = AppConfig.nostrRestoredBunkerUri
+            if (!restored.isNullOrBlank()) {
+                toastOnUi(getString(R.string.nostr_signer_restored))
+            }
             val editBinding = DialogEditTextBinding.inflate(layoutInflater).apply {
                 editView.hint = "bunker://..."
                 editView.setSingleLine(true)
+                if (!restored.isNullOrBlank()) {
+                    editView.setText(restored)
+                }
             }
             customView { editBinding.root }
             positiveButton(getString(R.string.nostr_signer_connect)) {
@@ -447,8 +454,14 @@ class OtherConfigFragment : PreferenceFragment(),
 
     private fun updateNostrSignerSummary() {
         val preference = findPreference<Preference>("nostrSigner") ?: return
-        preference.summary = NostrSignerStore.load()?.userPubkey
-            ?: getString(R.string.nostr_signer_not_connected)
+        val session = NostrSignerStore.load()
+        preference.summary = when {
+            session != null -> session.userPubkey
+            !AppConfig.nostrRestoredBunkerUri.isNullOrBlank() ->
+                getString(R.string.nostr_signer_restored)
+
+            else -> getString(R.string.nostr_signer_not_connected)
+        }
     }
 
     private fun updateNostrRelaysSummary() {

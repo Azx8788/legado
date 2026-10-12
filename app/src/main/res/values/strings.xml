@@ -1336,6 +1336,7 @@ Placeholders:
     <string name="nostr_review_summary">Read public paragraph comments from Nostr relays</string>
     <string name="nostr_signer">Nostr remote signer</string>
     <string name="nostr_signer_not_connected">Not connected</string>
+    <string name="nostr_signer_restored">Account restored from backup. Reconnect the remote signer.</string>
     <string name="nostr_signer_connect">Connect remote signer</string>
     <string name="nostr_signer_connecting">Connecting to remote signer</string>
     <string name="nostr_signer_connected">Nostr signer connected</string>

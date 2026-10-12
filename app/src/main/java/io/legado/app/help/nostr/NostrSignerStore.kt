@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import io.legado.app.help.config.AppConfig
 import org.json.JSONArray
 import org.json.JSONObject
 import splitties.init.appCtx
@@ -31,7 +32,28 @@ object NostrSignerStore {
         val relays: List<String>
     )
 
+    /**
+     * 可随备份迁移的账号信息：不含 client 私钥（且原会话用设备绑定的 AndroidKeyStore 加密），
+     * 恢复后只能把 bunker URI 带过去，由用户重新连接签名器完成配对。
+     */
+    data class Account(
+        val bunkerUri: String,
+        val signerPubkey: String,
+        val userPubkey: String,
+        val relays: List<String>
+    )
+
+    fun exportAccount(): Account? = load()?.let {
+        Account(
+            bunkerUri = it.bunkerUri,
+            signerPubkey = it.signerPubkey,
+            userPubkey = it.userPubkey,
+            relays = it.relays
+        )
+    }
+
     fun save(session: Session) {
+        AppConfig.nostrRestoredBunkerUri = null
         val json = JSONObject()
             .put("bunkerUri", session.bunkerUri)
             .put("clientPrivateKey", session.clientPrivateKey.toHex())

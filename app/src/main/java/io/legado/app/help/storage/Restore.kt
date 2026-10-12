@@ -33,8 +33,10 @@ import io.legado.app.data.entities.TxtTocRule
 import io.legado.app.help.DirectLinkUpload
 import io.legado.app.help.HighlightStyle
 import io.legado.app.help.LauncherIconHelp
+import io.legado.app.help.nostr.NostrSignerStore
 import io.legado.app.help.book.isLocal
 import io.legado.app.help.book.upType
+import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ThemeConfig
@@ -313,6 +315,19 @@ object Restore {
             }
         }?.onFailure {
             AppLog.put("恢复服务器配置出错\n${it.localizedMessage}", it)
+        }
+        File(path, Backup.nostrAccountFileName).takeIf {
+            it.exists()
+        }?.runCatching {
+            val raw = readText()
+            val json = runCatching { aes.decryptStr(raw) }.getOrDefault(raw)
+            GSON.fromJsonObject<NostrSignerStore.Account>(json).getOrNull()?.let { account ->
+                // 原会话密钥与 AndroidKeyStore 绑定、跨设备不可用，只带地址过来，由用户重新连接签名器
+                NostrSignerStore.clear()
+                AppConfig.nostrRestoredBunkerUri = account.bunkerUri
+            }
+        }?.onFailure {
+            AppLog.put("恢复 Nostr 账号出错\n${it.localizedMessage}", it)
         }
         File(path, DirectLinkUpload.ruleFileName).takeIf {
             it.exists()
