@@ -47,7 +47,7 @@ data class TextSelectMenuConfig(
         )
 
         val DEFAULT_BAR = listOf(KEY_REPLACE, KEY_COPY, KEY_BOOKMARK, KEY_HIGHLIGHT, KEY_ALOUD)
-        val DEFAULT_MORE = listOf(KEY_DICT, KEY_SEARCH, KEY_BROWSER, KEY_SHARE)
+        val DEFAULT_MORE = listOf(KEY_DICT, KEY_SEARCH, KEY_BROWSER, KEY_SHARE, KEY_REVIEW)
 
         private val gson = Gson()
 
