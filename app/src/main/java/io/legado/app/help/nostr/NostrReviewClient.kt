@@ -186,7 +186,7 @@ object NostrReviewClient {
     }.getOrNull()
 
     /** 按事件 id 在当前读取中继上取回事件（取回不到返回 null）。 */
-    suspend fun fetchEventById(id: String): NostrEvent? = runCatching {
+    internal suspend fun fetchEventById(id: String): NostrEvent? = runCatching {
         queryEvents(JSONObject().put("ids", JSONArray().put(id)).put("limit", 1))
             .firstOrNull()
     }.onFailure {
