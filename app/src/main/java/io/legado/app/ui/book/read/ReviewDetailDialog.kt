@@ -779,6 +779,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private fun loadDetailPage(paragraphNum: Int, page: Int, append: Boolean) {
         if (isLoading) return
         if (!append) {
+            // 初始加载先亮加载指示：未命中缓存时它要一直亮到联网结果回来，避免列表空白无反馈。
             binding.rotateLoading.visible()
             binding.tvMsg.gone()
             adapter.setItems(emptyList())
@@ -789,17 +790,16 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             detailItems.clear()
             expandedReplyParentKeys.clear()
             // 先渲染上次的首页内容（内存→落盘），联网结果回来后再合并刷新
-            val book = ReadBook.book
-            if (book != null) {
-                val cacheKey = NostrReviewDetailCache.key(
-                    book.bookUrl, ReadBook.durChapterIndex, paragraphNum
+            val cached = ReadBook.book?.let { book ->
+                NostrReviewDetailCache.get(
+                    NostrReviewDetailCache.key(book.bookUrl, ReadBook.durChapterIndex, paragraphNum)
                 )
-                val cached = NostrReviewDetailCache.get(cacheKey)
-                if (!cached.isNullOrEmpty()) {
-                    binding.rotateLoading.gone()
-                    mergeDetailItems(cached)
-                    renderUiItems()
-                }
+            }
+            if (!cached.isNullOrEmpty()) {
+                // 命中缓存：先渲染缓存并收起加载指示
+                binding.rotateLoading.gone()
+                mergeDetailItems(cached)
+                renderUiItems()
             }
         }
         if (!hasMore) return

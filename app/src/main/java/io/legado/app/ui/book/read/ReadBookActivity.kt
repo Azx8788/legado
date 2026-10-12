@@ -149,6 +149,7 @@ import io.legado.app.utils.isTrue
 import io.legado.app.utils.launch
 import io.legado.app.utils.navigationBarGravity
 import kotlin.coroutines.CoroutineContext
+import kotlin.math.abs
 import io.legado.app.utils.observeEvent
 import io.legado.app.utils.observeEventSticky
 import io.legado.app.utils.postEvent
@@ -170,6 +171,8 @@ import kotlinx.coroutines.Dispatchers.Main
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.htmlunit.corejs.javascript.NativeArray
@@ -181,8 +184,12 @@ import io.legado.app.data.entities.getUseReplaceRule
 import io.legado.app.data.entities.migrateTo
 import io.legado.app.data.entities.save
 
-/** 段评发布后回查统计的延迟：中继写入/索引有延迟，太早回查会把乐观 +1 覆盖掉。 */
-private const val REVIEW_SUMMARY_REFRESH_DELAY_MS = 2000L
+/** 段评发布后两次递进回查统计的延迟：中继写入/索引有延迟，太早回查会把乐观 +1 覆盖掉。 */
+private const val REVIEW_SUMMARY_REFRESH_DELAY_MS = 2_500L
+private const val REVIEW_SUMMARY_REFRESH_DELAY2_MS = 6_000L
+
+/** 本地计数下限的保护窗口：第二次回查之后仍再等一段时间，超时即清除、完全以远端为准。 */
+private const val REVIEW_SUMMARY_FLOOR_TTL_MS = 8_000L
 
 /** 选中态下点气泡时，临时气泡延迟多久清除（留出点击时间）。 */
 private const val TRANSIENT_REVIEW_LINGER_MS = 2000L
@@ -193,8 +200,9 @@ private const val DISK_SUMMARY_CHAPTER_WINDOW = 6
 private const val DISK_SUMMARY_KIND_NATIVE = "js"
 private const val DISK_SUMMARY_KIND_NOSTR = "nostr"
 
-/** 单章段评详情预热的段落数上限。 */
+/** 单章段评详情预热的段落数上限与并发上限。 */
 private const val MAX_WARM_PARAGRAPHS = 8
+private const val WARM_REVIEW_DETAIL_CONCURRENCY = 3
 
 /**
  * 阅读界面
@@ -328,6 +336,12 @@ class ReadBookActivity : BaseReadBookActivity(),
             return size > 5
         }
     }
+
+    /**
+     * 发布段评后的本地计数下限：统计 key → (段落号 → 本地已乐观加到的值)。
+     * 回查未及时反映新评论时，上屏取 max(远端, 下限)，避免 +1 被旧值冲掉；超时/切章即清除。
+     */
+    private val nostrReviewCountFloor = HashMap<String, MutableMap<Int, Int>>()
     private val nostrReviewUnlocatedCache =
         object : LinkedHashMap<String, List<NostrReviewClient.Comment>>(8, 0.75f, true) {
             override fun removeEldestEntry(
@@ -782,6 +796,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         synchronized(reviewSummaryPrefetchingKeys) {
             reviewSummaryPrefetchingKeys.clear()
         }
+        clearNostrReviewCountFloors()
         ChapterProvider.clearReviewProviders()
     }
 
@@ -2168,8 +2183,25 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     /**
+     * 当前阅读位置对应的段落号（与段评统计/详情 key 同口径：段落号 = reviewId）。
+     * 不在当前章或排版未就绪时返回 null（调用方退回按段落号升序预热）。
+     */
+    private fun currentReviewParagraphNum(chapterIndex: Int): Int? {
+        if (chapterIndex != ReadBook.durChapterIndex) return null
+        val textChapter = ReadBook.curTextChapter ?: return null
+        val lines = textChapter.getPage(ReadBook.durPageIndex)?.lines ?: return null
+        val firstLine = lines.firstOrNull() ?: return null
+        val offsetInPage = ReadBook.durChapterPos - firstLine.chapterPosition
+        val line = lines.firstOrNull { !it.isTitle && !it.isImage && offsetInPage in it.chapterIndices }
+            ?: lines.firstOrNull { !it.isTitle && !it.isImage }
+            ?: return null
+        return (line.paragraphNum - line.reviewTitleOffset).takeIf { it > 0 }
+    }
+
+    /**
      * 打开章节时预热当前章/下一章的 Nostr 段评详情首页：打开弹窗可直接命中缓存，不再等网络。
-     * 仅预热有评论的段落（-1 首评占位不算），单章上限 [MAX_WARM_PARAGRAPHS] 个。
+     * 仅预热有评论的段落（-1 首评占位不算），单章上限 [MAX_WARM_PARAGRAPHS] 个；
+     * 按「离当前阅读段落越近越先」排序，并发上限 [WARM_REVIEW_DETAIL_CONCURRENCY]，失败不影响其它段落。
      */
     private fun warmNostrReviewDetails(
         book: Book,
@@ -2180,32 +2212,41 @@ class ReadBookActivity : BaseReadBookActivity(),
         if (!AppConfig.nostrReviewEnabled) return
         val paragraphs = textChapter.paragraphTexts
         if (paragraphs.isEmpty()) return
-        val targets = counts.filter { it.value > 0 }.keys.take(MAX_WARM_PARAGRAPHS)
+        val currentParagraphNum = currentReviewParagraphNum(chapterIndex) ?: 0
+        // 拿不到当前段落号(非当前章/未排版)时 anchor 为 0，排序即退化为按段落号升序。
+        val targets = counts.filter { it.value > 0 }.keys
+            .sortedBy { abs(it - currentParagraphNum) }
+            .take(MAX_WARM_PARAGRAPHS)
         if (targets.isEmpty()) return
         val dedupeKey = "$chapterIndex|${book.bookUrl}"
         synchronized(nostrReviewDetailWarmingKeys) {
             if (!nostrReviewDetailWarmingKeys.add(dedupeKey)) return
         }
         Coroutine.async(lifecycleScope, IO) {
-            targets.forEach { paragraphNum ->
-                val cacheKey = NostrReviewDetailCache.key(book.bookUrl, chapterIndex, paragraphNum)
-                if (NostrReviewDetailCache.contains(cacheKey)) return@forEach
-                runCatching {
-                    val details = NostrReviewClient.loadDetails(
-                        book,
-                        textChapter.chapter.title,
-                        paragraphs,
-                        paragraphNum,
-                        1
-                    )
-                    NostrReviewDetailCache.put(
-                        cacheKey,
-                        NostrReviewDetailCache.toItems(details.items)
-                    )
-                }.onFailure {
-                    if (it is CancellationException) throw it
-                    AppLog.put("预热 Nostr 段评详情失败\n${it.localizedMessage}", it)
-                }
+            targets.chunked(WARM_REVIEW_DETAIL_CONCURRENCY).forEach { batch ->
+                batch.map { paragraphNum ->
+                    async {
+                        val cacheKey =
+                            NostrReviewDetailCache.key(book.bookUrl, chapterIndex, paragraphNum)
+                        if (NostrReviewDetailCache.contains(cacheKey)) return@async
+                        runCatching {
+                            val details = NostrReviewClient.loadDetails(
+                                book,
+                                textChapter.chapter.title,
+                                paragraphs,
+                                paragraphNum,
+                                1
+                            )
+                            NostrReviewDetailCache.put(
+                                cacheKey,
+                                NostrReviewDetailCache.toItems(details.items)
+                            )
+                        }.onFailure {
+                            if (it is CancellationException) throw it
+                            AppLog.put("预热 Nostr 段评详情失败\n${it.localizedMessage}", it)
+                        }
+                    }
+                }.awaitAll()
             }
         }.onFinally {
             synchronized(nostrReviewDetailWarmingKeys) {
@@ -2232,23 +2273,48 @@ class ReadBookActivity : BaseReadBookActivity(),
             nostrReviewSummaryLoadingKeys.remove(key)
         }
         // 乐观：本段计数先本地 +1 并立即上屏，图标/气泡马上出现；随后再联网校正。
-        if (paragraphNum > 0) {
+        val floorCount: Int? = if (paragraphNum > 0) {
             val base = previous?.counts?.get(paragraphNum)
                 ?: ChapterProvider.getReviewCount(paragraphNum)
+            val bumpedCount = base + 1
             val bumped = (previous ?: ReviewSummaryResult(emptyMap(), emptyMap())).copy(
-                counts = (previous?.counts ?: emptyMap()) + (paragraphNum to base + 1)
+                counts = (previous?.counts ?: emptyMap()) + (paragraphNum to bumpedCount)
             )
             synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = bumped }
+            // 登记本地下限：两次递进回查若仍拿到旧值，上屏时取 max(远端, 下限)，避免 +1 被冲掉。
+            putNostrReviewCountFloor(key, paragraphNum, bumpedCount)
             applyReviewSummary(key, chapterIndex, bumped)
+            bumpedCount
+        } else {
+            null
         }
         // 作废在途的统计响应，避免旧结果覆盖刚刷新的数据。
         val token = ++reviewSummaryRequestToken
-        // 中继写入有延迟，稍后再拉，避免刚发出去就回查导致计数被旧值覆盖。
+        // 中继写入/索引有延迟：两次递进回查，早的一次先纠偏、晚的一次兜底；
+        // 各自校验 token，期间有新请求(新发布/切章)则不覆盖。
         handler.postDelayed({
             if (token == reviewSummaryRequestToken) {
                 loadNostrReviewSummaryIfNeeded()
             }
         }, REVIEW_SUMMARY_REFRESH_DELAY_MS)
+        handler.postDelayed({
+            if (token == reviewSummaryRequestToken) {
+                // 第一次回查已把结果写回内存缓存，需再作废一次才能真再拉一次。
+                synchronized(nostrReviewSummaryCache) {
+                    nostrReviewSummaryCache.remove(key)
+                }
+                synchronized(nostrReviewSummaryLoadingKeys) {
+                    nostrReviewSummaryLoadingKeys.remove(key)
+                }
+                loadNostrReviewSummaryIfNeeded()
+            }
+        }, REVIEW_SUMMARY_REFRESH_DELAY2_MS)
+        // 第二次回查之后完全以远端为准（允许真实减少）。
+        floorCount?.let { registeredCount ->
+            handler.postDelayed({
+                clearNostrReviewCountFloor(key, paragraphNum, registeredCount)
+            }, REVIEW_SUMMARY_FLOOR_TTL_MS)
+        }
     }
 
     /**
@@ -2324,12 +2390,14 @@ class ReadBookActivity : BaseReadBookActivity(),
         } else {
             null
         }
-        val counts = if (nostrResult == null) {
+        // 刚发布过的段落，远端统计可能还没把新评论算进来：先取本地下限再合并上屏。
+        val nostrCounts = nostrResult?.counts?.let { floorNostrReviewCounts(key, it) }
+        val counts = if (nostrCounts == null) {
             result.counts
         } else {
-            (result.counts.keys + nostrResult.counts.keys).associateWith { paragraphIndex ->
+            (result.counts.keys + nostrCounts.keys).associateWith { paragraphIndex ->
                 val sourceCount = result.counts[paragraphIndex] ?: 0
-                val nostrCount = nostrResult.counts[paragraphIndex]
+                val nostrCount = nostrCounts[paragraphIndex]
                 when {
                     nostrCount == null -> sourceCount
                     nostrCount < 0 && sourceCount > 0 -> sourceCount
@@ -2362,6 +2430,63 @@ class ReadBookActivity : BaseReadBookActivity(),
             // 段评列刷新只需要重绘当前阅读视图，避免重新走 curPageChanged() 打断朗读位置。
             binding.readView.upContent(relativePosition = 0, resetPageOffset = false)
         }
+    }
+
+    /**
+     * 登记本地乐观计数下限：发布后回查若还没拿到新值，上屏时取 max(远端, 下限)，避免 +1 被旧值冲掉。
+     */
+    private fun putNostrReviewCountFloor(key: String, paragraphNum: Int, count: Int) {
+        synchronized(nostrReviewCountFloor) {
+            // 只保留当前统计 key 的下限：换章后旧章记录立即失效，避免切章残留。
+            nostrReviewCountFloor.keys.removeAll { it != key }
+            val floors = nostrReviewCountFloor.getOrPut(key) { HashMap<Int, Int>() }
+            if (count > (floors[paragraphNum] ?: Int.MIN_VALUE)) {
+                floors[paragraphNum] = count
+            }
+        }
+    }
+
+    /**
+     * 清除本次发布登记的计数下限（第二次回查完成后/超时）。
+     * 仅当下限仍是本次登记的值才清，避免清掉更晚一次发布刚提高的下限。
+     */
+    private fun clearNostrReviewCountFloor(key: String, paragraphNum: Int, expectedCount: Int) {
+        synchronized(nostrReviewCountFloor) {
+            val floors = nostrReviewCountFloor[key] ?: return
+            if (floors[paragraphNum] != expectedCount) return
+            floors.remove(paragraphNum)
+            if (floors.isEmpty()) {
+                nostrReviewCountFloor.remove(key)
+            }
+        }
+    }
+
+    /** 清空计数下限：切章/离开阅读页时调用，避免章节之间串值。 */
+    private fun clearNostrReviewCountFloors() {
+        synchronized(nostrReviewCountFloor) {
+            nostrReviewCountFloor.clear()
+        }
+    }
+
+    /**
+     * 对联网回来的 Nostr 统计施加本地下限：只提升有下限记录且远端非负的段落号。
+     * 远端是 -1(可首评占位)或其它负数时保持原值，不把占位语义 max 成正数。
+     */
+    private fun floorNostrReviewCounts(key: String, counts: Map<Int, Int>): Map<Int, Int> {
+        val floors = synchronized(nostrReviewCountFloor) {
+            nostrReviewCountFloor[key]?.takeIf { it.isNotEmpty() }?.let { HashMap(it) }
+        } ?: return counts
+        var floored = false
+        val result = counts.mapValues { (paragraphNum, remoteCount) ->
+            val floor = floors[paragraphNum]
+            if (floor != null && remoteCount >= 0 && floor > remoteCount) {
+                floored = true
+                floor
+            } else {
+                remoteCount
+            }
+        }
+        return if (floored) result else counts
     }
 
     private fun prefetchAdjacentReviewSummary(
@@ -2821,6 +2946,7 @@ class ReadBookActivity : BaseReadBookActivity(),
 
     override fun onDestroy() {
         super.onDestroy()
+        clearNostrReviewCountFloors()
         tts?.clearTts()
         textActionMenu.dismiss()
         popupAction.dismiss()
