@@ -877,7 +877,7 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
     fun selectedReviewTarget(): ReviewTarget? {
         if (!selectStart.isSelected()) return null
         val page = relativePage(selectStart.relativePagePos)
-        val line = page.getLine(selectStart.lineIndex) ?: return null
+        val line = page.lines.getOrNull(selectStart.lineIndex) ?: return null
         val reviewId = resolveReviewId(line)
         if (reviewId <= 0) return null
         return ReviewTarget(
