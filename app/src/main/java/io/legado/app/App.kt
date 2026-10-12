@@ -16,6 +16,8 @@ import com.script.rhino.ReadOnlyJavaObject
 import com.script.rhino.RhinoScriptEngine
 import com.script.rhino.RhinoWrapFactory
 import io.legado.app.base.AppContextWrapper
+import io.legado.app.help.nostr.NostrProfileStore
+import io.legado.app.help.nostr.NostrSignerStore
 import io.legado.app.constant.AppConst.channelIdDownload
 import io.legado.app.constant.AppConst.channelIdReadAloud
 import io.legado.app.constant.AppConst.channelIdWeb
@@ -167,6 +169,12 @@ class App : Application() {
             }
             //预下载Cronet so
             Cronet.preDownload()
+            //已登录 Nostr：启动后同步本账号资料（头像/昵称），评论列表优先展示
+            runCatching {
+                NostrSignerStore.load()?.let { session ->
+                    NostrProfileStore.sync(listOf(session.userPubkey))
+                }
+            }
             createNotificationChannels()
             LiveEventBus.config()
                 .lifecycleObserverAlwaysActive(true)

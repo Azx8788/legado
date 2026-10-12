@@ -141,6 +141,50 @@ object NostrReviewClient {
         )
     }
 
+    /**
+     * 拉取 kind 0 账号资料（头像/昵称）；同一 pubkey 取 created_at 最新的一条。
+     */
+    suspend fun loadProfiles(pubkeys: Collection<String>): List<NostrProfileStore.Profile> {
+        val authors = pubkeys.asSequence()
+            .map { it.lowercase() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .toList()
+        if (authors.isEmpty()) return emptyList()
+        val latest = HashMap<String, NostrEvent>()
+        authors.chunked(50).forEach { batch ->
+            val events = runCatching {
+                queryEvents(
+                    JSONObject()
+                        .put("kinds", JSONArray().put(0))
+                        .put("authors", JSONArray(batch))
+                        .put("limit", batch.size)
+                )
+            }.onFailure {
+                if (it is CancellationException) throw it
+                AppLog.put("加载 Nostr 账号资料失败\n${it.localizedMessage}", it)
+            }.getOrDefault(emptyList())
+            events.forEach { event ->
+                val old = latest[event.pubkey]
+                if (old == null || event.createdAt > old.createdAt) {
+                    latest[event.pubkey] = event
+                }
+            }
+        }
+        val now = System.currentTimeMillis()
+        return latest.values.mapNotNull { event ->
+            val content = runCatching { JSONObject(event.content) }.getOrNull()
+                ?: return@mapNotNull null
+            NostrProfileStore.Profile(
+                pubkey = event.pubkey,
+                name = content.optString("name").takeIf { it.isNotBlank() },
+                displayName = content.optString("display_name").takeIf { it.isNotBlank() },
+                picture = content.optString("picture").takeIf { it.isNotBlank() },
+                updatedAt = now
+            )
+        }
+    }
+
     fun bookIdentifier(name: String, author: String): String {
         val normalizedName = normalize(name).lowercase(Locale.ROOT)
         val normalizedAuthor = normalize(author).lowercase(Locale.ROOT)
@@ -396,7 +440,7 @@ object NostrReviewClient {
                 val pubkey = json.optString("pubkey").takeIf { it.isNotBlank() } ?: return null
                 val createdAt = json.optLong("created_at", -1).takeIf { it >= 0 } ?: return null
                 val kind = json.optInt("kind", -1)
-                    .takeIf { it == 7 || it == 9802 || it == 1111 || it == 24133 } ?: return null
+                    .takeIf { it == 0 || it == 7 || it == 9802 || it == 1111 || it == 24133 } ?: return null
                 val content = json.optString("content")
                 val signature = json.optString("sig").takeIf { it.isNotBlank() } ?: return null
                 val tags = json.optJSONArray("tags") ?: JSONArray()
