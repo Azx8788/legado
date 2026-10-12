@@ -50,6 +50,7 @@ import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.jsSource.JsSourceReview
 import io.legado.app.utils.NetworkUtils
+import io.legado.app.utils.ACache
 import io.legado.app.utils.dpToPx
 import io.legado.app.utils.gone
 import io.legado.app.utils.isAbsUrl
@@ -98,6 +99,71 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private fun detailCacheKey(): String? {
         val book = ReadBook.book ?: return null
         return "${book.bookUrl}|${ReadBook.durChapterIndex}|$paragraphNum"
+    }
+
+    /** 详情首页落盘缓存：手写编解码（不用 Gson 反射，避开 R8 改名后读出空白项）。 */
+    private val detailDiskCache by lazy { ACache.get("review_details") }
+
+    private fun readPersistedDetailItems(cacheKey: String): List<ReviewDetailItem>? {
+        val json = detailDiskCache.getAsString(cacheKey) ?: return null
+        return detailItemsFromJson(json)?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun writePersistedDetailItems(cacheKey: String, items: List<ReviewDetailItem>) {
+        if (items.isEmpty()) return
+        runCatching {
+            detailDiskCache.put(cacheKey, detailItemsToJson(items), DETAIL_CACHE_TTL_SECONDS)
+        }
+    }
+
+    private fun detailItemsToJson(items: List<ReviewDetailItem>): String =
+        JSONArray().apply { items.forEach { put(detailItemToJson(it)) } }.toString()
+
+    private fun detailItemsFromJson(json: String): List<ReviewDetailItem>? = runCatching {
+        val array = JSONArray(json)
+        (0 until array.length()).mapNotNull { index ->
+            array.optJSONObject(index)?.let { detailItemFromJson(it) }
+        }
+    }.getOrNull()
+
+    private fun detailItemToJson(item: ReviewDetailItem): JSONObject = JSONObject().apply {
+        item.id?.let { put("id", it) }
+        item.avatar?.let { put("avatar", it) }
+        item.name?.let { put("name", it) }
+        item.nostrAuthorPubkey?.let { put("author", it) }
+        item.nostrRootExcerptId?.let { put("excerpt", it) }
+        item.nostrRootExcerptPubkey?.let { put("excerptAuthor", it) }
+        put("badges", JSONArray(item.badges))
+        item.content?.let { put("content", it) }
+        item.imageUrl?.let { put("image", it) }
+        item.audioUrl?.let { put("audio", it) }
+        item.time?.let { put("time", it) }
+        item.likeCount?.let { put("like", it) }
+        item.replyCount?.let { put("replyCount", it) }
+        put("replies", JSONArray().apply { item.replies.forEach { put(detailItemToJson(it)) } })
+    }
+
+    private fun detailItemFromJson(json: JSONObject): ReviewDetailItem {
+        val badgesJson = json.optJSONArray("badges") ?: JSONArray()
+        val repliesJson = json.optJSONArray("replies") ?: JSONArray()
+        return ReviewDetailItem(
+            id = json.optString("id").takeIf { it.isNotEmpty() },
+            avatar = json.optString("avatar").takeIf { it.isNotEmpty() },
+            name = json.optString("name").takeIf { it.isNotEmpty() },
+            nostrAuthorPubkey = json.optString("author").takeIf { it.isNotEmpty() },
+            nostrRootExcerptId = json.optString("excerpt").takeIf { it.isNotEmpty() },
+            nostrRootExcerptPubkey = json.optString("excerptAuthor").takeIf { it.isNotEmpty() },
+            badges = (0 until badgesJson.length()).map { badgesJson.optString(it) },
+            content = json.optString("content").takeIf { it.isNotEmpty() },
+            imageUrl = json.optString("image").takeIf { it.isNotEmpty() },
+            audioUrl = json.optString("audio").takeIf { it.isNotEmpty() },
+            time = json.optString("time").takeIf { it.isNotEmpty() },
+            likeCount = if (json.has("like")) json.optInt("like") else null,
+            replyCount = if (json.has("replyCount")) json.optInt("replyCount") else null,
+            replies = (0 until repliesJson.length()).mapNotNull { index ->
+                repliesJson.optJSONObject(index)?.let { detailItemFromJson(it) }
+            }
+        )
     }
     private val expandedReplyParentKeys = HashSet<String>()
     private var reviewAudioPlayer: ExoPlayer? = null
@@ -476,9 +542,12 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             mainItemIndexByKey.clear()
             detailItems.clear()
             expandedReplyParentKeys.clear()
-            // 先渲染上次的首页内容，联网结果回来后再合并刷新
+            // 先渲染上次的首页内容（内存→落盘），联网结果回来后再合并刷新
             detailCacheKey()?.let { cacheKey ->
-                detailFirstPageCache[cacheKey]?.takeIf { it.isNotEmpty() }?.let { cached ->
+                val cached = detailFirstPageCache[cacheKey]?.takeIf { it.isNotEmpty() }
+                    ?: readPersistedDetailItems(cacheKey)
+                if (!cached.isNullOrEmpty()) {
+                    detailFirstPageCache[cacheKey] = cached
                     binding.rotateLoading.gone()
                     mergeDetailItems(cached)
                     renderUiItems()
@@ -630,7 +699,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             renderUiItems()
             if (!append && page == 1) {
                 detailCacheKey()?.let { cacheKey ->
-                    detailFirstPageCache[cacheKey] = ArrayList(detailItems)
+                    val snapshot = ArrayList(detailItems)
+                    detailFirstPageCache[cacheKey] = snapshot
+                    writePersistedDetailItems(cacheKey, snapshot)
                 }
             }
             isLoading = false
@@ -892,6 +963,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         const val TYPE_NORMAL = 0
         const val TYPE_MORE = 1
         private const val NOSTR_MORE_PAGE = "nostr-more"
+        private const val DETAIL_CACHE_TTL_SECONDS = 24 * 60 * 60
         const val PAYLOAD_AUDIO_STATE = "review_audio_state"
         private var lastHeightRatio = DEFAULT_HEIGHT_RATIO
 
