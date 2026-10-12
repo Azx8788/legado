@@ -1366,6 +1366,9 @@ Placeholders:
     <string name="nostr_comment_publish">Publish</string>
     <string name="nostr_comment_publishing">Publishing…</string>
     <string name="nostr_comment_failed">Unable to publish Nostr comment</string>
+    <string name="nostr_comment_sending">Sending…</string>
+    <string name="nostr_comment_draft_unsent">Draft · not sent</string>
+    <string name="nostr_comment_me">Me</string>
     <string name="rule_review_reply_list">Sub-comment list（replyListRule）</string>
     <string name="rule_review_reply_id">Sub-comment ID（replyIdRule）</string>
     <string name="rule_review_reply_avatar">Sub-comment avatar（replyAvatarRule）</string>

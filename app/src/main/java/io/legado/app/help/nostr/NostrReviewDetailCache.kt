@@ -99,6 +99,7 @@ internal object NostrReviewDetailCache {
         if (item.likedByMe) put("liked", true)
         item.myReactionId?.let { put("myReaction", it) }
         item.replyCount?.let { put("replyCount", it) }
+        item.pendingState?.let { put("pending", it) }
         put("replies", JSONArray().apply { item.replies.forEach { put(detailItemToJson(it)) } })
     }
 
@@ -121,6 +122,7 @@ internal object NostrReviewDetailCache {
             likedByMe = json.optBoolean("liked"),
             myReactionId = json.optString("myReaction").takeIf { it.isNotEmpty() },
             replyCount = if (json.has("replyCount")) json.optInt("replyCount") else null,
+            pendingState = json.optString("pending").takeIf { it.isNotEmpty() },
             replies = (0 until repliesJson.length()).mapNotNull { index ->
                 repliesJson.optJSONObject(index)?.let { detailItemFromJson(it) }
             }

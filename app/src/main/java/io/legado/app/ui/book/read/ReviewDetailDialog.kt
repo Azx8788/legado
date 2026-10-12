@@ -28,6 +28,10 @@ import com.google.android.flexbox.FlexboxLayout
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
 import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
 import io.legado.app.constant.AppLog
@@ -98,6 +102,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private var nextPageUrl: String? = null
     private val mainItemIndexByKey = LinkedHashMap<String, Int>()
     private val detailItems = ArrayList<ReviewDetailItem>()
+    /** 本地占位项的发布参数，用于草稿态直接重发；成功移除占位时清理。 */
+    private val localPendingPublish = HashMap<String, PublishArgs>()
 
     private val expandedReplyParentKeys = HashSet<String>()
     private var reviewAudioPlayer: ExoPlayer? = null
@@ -282,6 +288,244 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         reviewDraftCache.remove(key)
     }
 
+    /**
+     * 乐观插入一条本地占位评论：首评加到列表顶部，回复挂到父评论 replies 末尾。
+     * 返回占位 id，发布成功后据此移除、失败后据此转草稿态。
+     */
+    private fun insertLocalPendingItem(text: String, replyTo: ReviewDetailItem?): String {
+        val pubkey = NostrSignerStore.load()?.userPubkey?.takeIf { it.isNotBlank() }
+        val profile = pubkey?.let { NostrProfileStore.get(it) }
+        val localId = "local:" + UUID.randomUUID()
+        val pending = ReviewDetailItem(
+            id = localId,
+            avatar = profile?.picture,
+            name = profile?.bestName ?: pubkey?.take(12) ?: getString(R.string.nostr_comment_me),
+            nostrAuthorPubkey = pubkey,
+            badges = emptyList(),
+            content = text,
+            imageUrl = null,
+            audioUrl = null,
+            time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date()),
+            likeCount = null,
+            replyCount = null,
+            replies = emptyList(),
+            pendingState = PENDING_SENDING
+        )
+        val parentId = replyTo?.id?.takeIf { it.isNotBlank() }
+        if (parentId != null && appendReplyToItem(parentId, pending)) {
+            findTopLevelParentKey(parentId)?.let { expandedReplyParentKeys.add(it) }
+        } else {
+            detailItems.add(0, pending)
+            reindexMainItems()
+        }
+        binding.tvMsg.gone()
+        renderUiItems()
+        return localId
+    }
+
+    /** 把占位回复挂到 targetId 评论的 replies 末尾(递归查找，含嵌套)；返回是否找到父项。 */
+    private fun appendReplyToItem(targetId: String, reply: ReviewDetailItem): Boolean {
+        for (index in detailItems.indices) {
+            val item = detailItems[index]
+            if (item.id == targetId) {
+                detailItems[index] = item.copy(replies = item.replies + reply)
+                return true
+            }
+            val updated = appendReplyToReplies(item.replies, targetId, reply)
+            if (updated != null) {
+                detailItems[index] = item.copy(replies = updated)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun appendReplyToReplies(
+        replies: List<ReviewDetailItem>,
+        targetId: String,
+        reply: ReviewDetailItem
+    ): List<ReviewDetailItem>? {
+        var found = false
+        val result = replies.map { existing ->
+            when {
+                existing.id == targetId -> {
+                    found = true
+                    existing.copy(replies = existing.replies + reply)
+                }
+                else -> {
+                    val nested = appendReplyToReplies(existing.replies, targetId, reply)
+                    if (nested != null) {
+                        found = true
+                        existing.copy(replies = nested)
+                    } else {
+                        existing
+                    }
+                }
+            }
+        }
+        return if (found) result else null
+    }
+
+    /** 找到 targetId 所在的主评论 key，用于展开其回复区。 */
+    private fun findTopLevelParentKey(targetId: String): String? {
+        detailItems.forEach { item ->
+            if (item.id == targetId || containsReplyId(item.replies, targetId)) {
+                return buildDetailItemKey(item, isReply = false)
+            }
+        }
+        return null
+    }
+
+    private fun containsReplyId(replies: List<ReviewDetailItem>, targetId: String): Boolean =
+        replies.any { it.id == targetId || containsReplyId(it.replies, targetId) }
+
+    private fun findDetailItemById(id: String): ReviewDetailItem? {
+        detailItems.forEach { item ->
+            if (item.id == id) return item
+            findDetailItemInReplies(item.replies, id)?.let { return it }
+        }
+        return null
+    }
+
+    private fun findDetailItemInReplies(replies: List<ReviewDetailItem>, id: String): ReviewDetailItem? {
+        replies.forEach { reply ->
+            if (reply.id == id) return reply
+            findDetailItemInReplies(reply.replies, id)?.let { return it }
+        }
+        return null
+    }
+
+    /** 顶层索引表用于合并网络结果，列表顶部插删会错位，必须重建。 */
+    private fun reindexMainItems() {
+        mainItemIndexByKey.clear()
+        detailItems.forEachIndexed { index, item ->
+            mainItemIndexByKey[buildDetailItemKey(item, isReply = false)] = index
+        }
+    }
+
+    /** 按 id 递归移除本地占位项。 */
+    private fun removeLocalPendingItem(localId: String) {
+        localPendingPublish.remove(localId)
+        val topIndex = detailItems.indexOfFirst { it.id == localId }
+        if (topIndex >= 0) {
+            detailItems.removeAt(topIndex)
+            reindexMainItems()
+            renderUiItems()
+            return
+        }
+        for (index in detailItems.indices) {
+            val updated = removeReplyById(detailItems[index].replies, localId)
+            if (updated != null) {
+                detailItems[index] = detailItems[index].copy(replies = updated)
+                renderUiItems()
+                return
+            }
+        }
+    }
+
+    private fun removeReplyById(
+        replies: List<ReviewDetailItem>,
+        targetId: String
+    ): List<ReviewDetailItem>? {
+        if (replies.isEmpty()) return null
+        if (replies.any { it.id == targetId }) {
+            return replies.filterNot { it.id == targetId }
+        }
+        var changed = false
+        val result = replies.map { reply ->
+            val updated = removeReplyById(reply.replies, targetId)
+            if (updated != null) {
+                changed = true
+                reply.copy(replies = updated)
+            } else {
+                reply
+            }
+        }
+        return if (changed) result else null
+    }
+
+    /** 改变本地占位项的发布态(sending/failed)，触发重绑以更新 chip。 */
+    private fun setPendingState(localId: String, state: String?) {
+        for (index in detailItems.indices) {
+            val updated = detailItems[index].withPendingState(localId, state)
+            if (updated !== detailItems[index]) {
+                detailItems[index] = updated
+                renderUiItems()
+                return
+            }
+        }
+    }
+
+    private fun ReviewDetailItem.withPendingState(
+        targetId: String,
+        state: String?
+    ): ReviewDetailItem {
+        if (id == targetId) return copy(pendingState = state)
+        if (replies.isEmpty()) return this
+        var changed = false
+        val newReplies = replies.map { reply ->
+            val updated = reply.withPendingState(targetId, state)
+            if (updated !== reply) changed = true
+            updated
+        }
+        return if (changed) copy(replies = newReplies) else this
+    }
+
+    /** 点击草稿态占位：直接用原参数重发(sending 态忽略，防重复点击)。 */
+    private fun republishLocalPending(item: ReviewUiItem) {
+        val localId = item.id?.takeIf { it.isNotBlank() } ?: return
+        if (item.pendingState != PENDING_FAILED) return
+        val args = localPendingPublish[localId] ?: return
+        setPendingState(localId, PENDING_SENDING)
+        val draftKey = if (args.parentId != null) {
+            reviewDraftKey("reply", args.parentId)
+        } else {
+            reviewDraftKey("comment")
+        }
+        lifecycleScope.launch {
+            val result = runCatching {
+                val book = ReadBook.book ?: error("No book is open")
+                withContext(IO) {
+                    val parentId = args.parentId
+                    if (parentId != null) {
+                        NostrReviewPublisher.replyToComment(
+                            book = book,
+                            rootExcerptId = args.rootId.orEmpty(),
+                            rootExcerptPubkey = args.rootAuthor.orEmpty(),
+                            parentCommentId = parentId,
+                            parentAuthorPubkey = args.parentAuthor.orEmpty(),
+                            content = args.text
+                        )
+                    } else {
+                        val chapterIndex = ReadBook.durChapterIndex
+                        val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, chapterIndex)
+                            ?: error("Current chapter is unavailable")
+                        val textChapter = ReadBook.curTextChapter?.takeIf {
+                            it.chapter.index == chapterIndex
+                        } ?: error("Current chapter text is unavailable")
+                        NostrReviewPublisher.postParagraphComment(
+                            book = book,
+                            chapterTitle = chapter.title,
+                            paragraphs = textChapter.paragraphTexts,
+                            paragraphIndex = paragraphNum,
+                            comment = args.text
+                        )
+                    }
+                }
+            }.onFailure { if (it is CancellationException) throw it }
+            result.onSuccess {
+                clearReviewDraft(draftKey)
+                removeLocalPendingItem(localId)
+                loadDetailPage(paragraphNum, 1, append = false)
+                postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
+            }.onFailure {
+                // 保留占位与已有草稿，等下次点击重试
+                setPendingState(localId, PENDING_FAILED)
+                context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
+            }
+        }
+    }
+
     private fun showNostrCommentEditor() {
         val draftKey = reviewDraftKey("comment")
         val editBinding = io.legado.app.databinding.DialogEditTextBinding.inflate(layoutInflater).apply {
@@ -305,11 +549,10 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             positive.setOnClickListener {
                 val comment = editBinding.editView.text?.toString().orEmpty().trim()
                 if (comment.isBlank()) return@setOnClickListener
-                // 发布中：改名并禁用按钮，避免重复点击；弹窗保持打开以显示进度
                 positive.isEnabled = false
-                positive.text = getString(R.string.nostr_comment_publishing)
-                editBinding.editView.isEnabled = false
-                saveReviewDraft(draftKey, comment)
+                val localId = insertLocalPendingItem(comment, null)
+                localPendingPublish[localId] = PublishArgs(text = comment)
+                dialog.dismiss()
                 lifecycleScope.launch {
                     val result = runCatching {
                         val book = ReadBook.book ?: error("No book is open")
@@ -331,15 +574,14 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                     }.onFailure { if (it is CancellationException) throw it }
                     result.onSuccess {
                         clearReviewDraft(draftKey)
-                        dialog.dismiss()
+                        removeLocalPendingItem(localId)
                         loadDetailPage(paragraphNum, 1, append = false)
                         // 通知阅读页刷新段评统计,让「首评」气泡(-1 占位)变为真实评论数。
-                        postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
+                        postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
                     }.onFailure {
-                        // 失败保留内容为草稿，恢复按钮以便重试
-                        positive.isEnabled = true
-                        positive.text = getString(R.string.nostr_comment_publish)
-                        editBinding.editView.isEnabled = true
+                        // 弹窗已关闭，保留占位并转为草稿态，点它重发
+                        setPendingState(localId, PENDING_FAILED)
+                        saveReviewDraft(draftKey, comment)
                         context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
                     }
                 }
@@ -771,6 +1013,15 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val hasNextPageRule: Boolean
     )
 
+    /** 本地占位的发布参数：parentId 为空即首评，否则为回复。 */
+    private data class PublishArgs(
+        val text: String,
+        val parentId: String? = null,
+        val parentAuthor: String? = null,
+        val rootId: String? = null,
+        val rootAuthor: String? = null
+    )
+
     /**
      * 引擎层 JsSourceReview.ReviewDetailItem 转 UI 层 ReviewDetailItem。
      * badge(单值)映射为 badges 列表;JS 契约无 img/audio/time/likeCount 字段,对应 UI 字段取 null。
@@ -913,7 +1164,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val isReply: Boolean,
         val itemType: Int = TYPE_NORMAL,
         val parentKey: String? = null,
-        val moreCount: Int = 0
+        val moreCount: Int = 0,
+        val pendingState: String? = null
     )
 
     private fun flattenItems(items: List<ReviewDetailItem>): List<ReviewUiItem> {
@@ -975,7 +1227,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         likedByMe = likedByMe,
         myReactionId = myReactionId,
         isReply = isReply,
-        parentKey = parentKey
+        parentKey = parentKey,
+        pendingState = pendingState
     )
 
     private companion object {
@@ -987,6 +1240,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         private const val NOSTR_MORE_PAGE = "nostr-more"
         private const val REVIEW_DRAFT_TTL_SECONDS = 30 * 24 * 60 * 60
         const val PAYLOAD_AUDIO_STATE = "review_audio_state"
+        private const val PENDING_SENDING = "sending"
+        private const val PENDING_FAILED = "failed"
         private var lastHeightRatio = DEFAULT_HEIGHT_RATIO
     }
 
@@ -1237,6 +1492,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             val basePadding = 8.dpToPx()
             val mainAvatarSize = 36.dpToPx()
             if (item.itemType == TYPE_MORE) {
+                binding.root.alpha = 1f
                 binding.root.updatePaddingRelative(
                     start = basePadding,
                     top = 2.dpToPx(),
@@ -1265,6 +1521,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.llContentCard.background = null
                 return
             }
+
+            binding.root.alpha = if (item.pendingState == PENDING_SENDING) 0.6f else 1f
 
             // 子评论缩进：使用主评论头像宽度作为占位，避免写死 magic number
             val replyIndent = mainAvatarSize
@@ -1296,7 +1554,6 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             val contentColor = context.getCompatColor(R.color.reviewContentText)
             if (item.isReply) {
                 binding.tvName.gone()
-                binding.llBadges.gone()
                 val name = item.name.orEmpty().trim()
                 val content = item.content.orEmpty().trim()
                 binding.tvContent.text = when {
@@ -1318,10 +1575,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.tvName.text = item.name.orEmpty()
                 binding.tvName.visibility = if (item.name.isNullOrBlank()) View.GONE else View.VISIBLE
                 binding.tvName.setTextColor(primaryColor)
-                binding.llBadges.visibility = if (item.badges.isEmpty()) View.GONE else View.VISIBLE
                 binding.tvContent.text = item.content.orEmpty()
             }
-            if (!item.nostrAuthorPubkey.isNullOrBlank() && NostrSignerStore.load() != null) {
+            if (item.pendingState == null && !item.nostrAuthorPubkey.isNullOrBlank() && NostrSignerStore.load() != null) {
                 binding.tvReply.visible()
             } else {
                 binding.tvReply.gone()
@@ -1345,7 +1601,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
 
             binding.tvTime.text = item.time.orEmpty()
             binding.tvTime.visibility = if (item.time.isNullOrBlank()) View.GONE else View.VISIBLE
-            if (!item.isReply) {
+            if (!item.isReply && item.pendingState == null) {
                 binding.ivLike.visible()
                 binding.llLikeArea.visible()
                 // 已赞（含本地乐观态）用强调色
@@ -1365,8 +1621,10 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.llLikeArea.gone()
             }
 
-            if (!item.isReply) {
-                bindBadges(binding.llBadges, item.badges)
+            if (item.isReply && item.pendingState == null) {
+                binding.llBadges.gone()
+            } else {
+                bindBadges(binding.llBadges, item.badges, item.pendingState)
             }
         }
 
@@ -1381,6 +1639,10 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                     if (canExpand && expandedReplyParentKeys.add(parentKey)) {
                         renderUiItems()
                     }
+                    return@setOnClickListener
+                }
+                if (item.pendingState == PENDING_FAILED) {
+                    republishLocalPending(item)
                 }
             }
             binding.ivMedia.setOnClickListener {
@@ -1395,11 +1657,11 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             }
             binding.tvReply.setOnClickListener {
                 val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
-                if (item.itemType != TYPE_MORE) showNostrReplyEditor(item)
+                if (item.itemType != TYPE_MORE && item.pendingState == null) showNostrReplyEditor(item)
             }
             binding.llLikeArea.setOnClickListener {
                 val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
-                if (item.itemType != TYPE_MORE && !item.id.isNullOrBlank() &&
+                if (item.itemType != TYPE_MORE && item.pendingState == null && !item.id.isNullOrBlank() &&
                     !item.nostrAuthorPubkey.isNullOrBlank() && NostrSignerStore.load() != null
                 ) {
                     if (item.likedByMe) {
@@ -1442,9 +1704,15 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                     val content = editBinding.editView.text?.toString().orEmpty().trim()
                     if (content.isBlank()) return@setOnClickListener
                     positive.isEnabled = false
-                    positive.text = getString(R.string.nostr_comment_publishing)
-                    editBinding.editView.isEnabled = false
-                    saveReviewDraft(draftKey, content)
+                    val localId = insertLocalPendingItem(content, findDetailItemById(parentId))
+                    localPendingPublish[localId] = PublishArgs(
+                        text = content,
+                        parentId = parentId,
+                        parentAuthor = parentAuthor,
+                        rootId = rootId,
+                        rootAuthor = rootAuthor
+                    )
+                    dialog.dismiss()
                     lifecycleScope.launch {
                         val result = runCatching {
                             val book = ReadBook.book ?: error("No book is open")
@@ -1461,14 +1729,14 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         }.onFailure { if (it is CancellationException) throw it }
                         result.onSuccess {
                             clearReviewDraft(draftKey)
-                            dialog.dismiss()
+                            removeLocalPendingItem(localId)
                             loadDetailPage(paragraphNum, 1, append = false)
                             // 回复也同样计入图标计数，需刷新本章统计
-                            postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
+                            postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
                         }.onFailure {
-                            positive.isEnabled = true
-                            positive.text = getString(R.string.nostr_comment_publish)
-                            editBinding.editView.isEnabled = true
+                            // 弹窗已关闭，保留占位并转为草稿态，点它重发
+                            setPendingState(localId, PENDING_FAILED)
+                            saveReviewDraft(draftKey, content)
                             context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
                         }
                     }
@@ -1537,9 +1805,13 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             )
         }
 
-        private fun bindBadges(container: FlexboxLayout, badges: List<String>) {
+        private fun bindBadges(
+            container: FlexboxLayout,
+            badges: List<String>,
+            pendingState: String? = null
+        ) {
             container.removeAllViews()
-            if (badges.isEmpty()) {
+            if (badges.isEmpty() && pendingState == null) {
                 container.gone()
                 return
             }
@@ -1571,6 +1843,26 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                     }
                     container.addView(tv)
                 }
+            }
+            if (pendingState != null) {
+                container.addView(createPendingChip(pendingState))
+            }
+        }
+
+        private fun createPendingChip(pendingState: String): TextView {
+            val sending = pendingState == PENDING_SENDING
+            return TextView(context).apply {
+                layoutParams = FlexboxLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { setMargins(0, 0, 6.dpToPx(), 0) }
+                setPadding(6.dpToPx(), 2.dpToPx(), 6.dpToPx(), 2.dpToPx())
+                setTextColor(context.getCompatColor(if (sending) R.color.secondaryText else R.color.accent))
+                textSize = 11f
+                text = context.getString(
+                    if (sending) R.string.nostr_comment_sending else R.string.nostr_comment_draft_unsent
+                )
+                setBackgroundResource(R.drawable.bg_review_badge_chip)
             }
         }
     }

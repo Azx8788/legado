@@ -19,5 +19,7 @@ internal data class ReviewDetailItem(
     val likedByMe: Boolean = false,
     val myReactionId: String? = null,
     val replyCount: Int?,
-    val replies: List<ReviewDetailItem>
+    val replies: List<ReviewDetailItem>,
+    /** 本地乐观插入的发布态：sending/failed；null=正常(已落库或来自网络)。 */
+    val pendingState: String? = null
 )
