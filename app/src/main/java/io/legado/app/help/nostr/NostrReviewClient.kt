@@ -354,19 +354,7 @@ object NostrReviewClient {
         content: String,
         signature: String
     ): Boolean = runCatching {
-        val canonicalTags = JSONArray().apply {
-            tags.forEach { tag -> put(JSONArray(tag)) }
-        }
-        val serialized = JSONArray()
-            .put(0)
-            .put(pubkey)
-            .put(createdAt)
-            .put(kind)
-            .put(canonicalTags)
-            .put(content)
-            .toString()
-        val calculatedId = MessageDigest.getInstance("SHA-256")
-            .digest(serialized.toByteArray(Charsets.UTF_8))
+        val calculatedId = nostrEventId(pubkey, createdAt, kind, tags, content)
         val suppliedId = id.hexToByteArray() ?: return false
         if (!MessageDigest.isEqual(calculatedId, suppliedId)) return false
         val signatureBytes = signature.hexToByteArray() ?: return false
@@ -424,4 +412,63 @@ object NostrReviewClient {
             }
         }
     }
+}
+
+/**
+ * NIP-01 规范序列化：`[0,pubkey,created_at,kind,tags,content]`。
+ *
+ * 不能交给 org.json：Android 的 JSONStringer 会把 "/" 转义成 "\/"，而 NIP-44 的 base64 载荷与
+ * URL 类标签都常含 "/"，会使本地算出的 id 与中继/签名器重算的结果不一致（事件被拒收）。
+ * 故手写 JSON 转义（只处理 "、\ 与控制字符），保留 "/" 原样。
+ */
+internal fun canonicalEventJson(
+    pubkey: String,
+    createdAt: Long,
+    kind: Int,
+    tags: List<List<String>>,
+    content: String
+): String = buildString {
+    append("[0,")
+    appendJsonString(pubkey)
+    append(',').append(createdAt)
+    append(',').append(kind)
+    append(",[")
+    tags.forEachIndexed { index, tag ->
+        if (index > 0) append(',')
+        append('[')
+        tag.forEachIndexed { tagIndex, value ->
+            if (tagIndex > 0) append(',')
+            appendJsonString(value)
+        }
+        append(']')
+    }
+    append("],")
+    appendJsonString(content)
+    append(']')
+}
+
+internal fun nostrEventId(
+    pubkey: String,
+    createdAt: Long,
+    kind: Int,
+    tags: List<List<String>>,
+    content: String
+): ByteArray = MessageDigest.getInstance("SHA-256")
+    .digest(canonicalEventJson(pubkey, createdAt, kind, tags, content).toByteArray(Charsets.UTF_8))
+
+private fun StringBuilder.appendJsonString(value: String) {
+    append('"')
+    for (c in value) {
+        when (c) {
+            '"' -> append("\\\"")
+            '\\' -> append("\\\\")
+            '\n' -> append("\\n")
+            '\r' -> append("\\r")
+            '\t' -> append("\\t")
+            '\b' -> append("\\b")
+            '\u000C' -> append("\\f")
+            else -> if (c < ' ') append("\\u%04x".format(c.code)) else append(c)
+        }
+    }
+    append('"')
 }

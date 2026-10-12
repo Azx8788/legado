@@ -3,7 +3,6 @@ package io.legado.app.help.nostr
 import fr.acinq.secp256k1.Secp256k1
 import org.json.JSONArray
 import org.json.JSONObject
-import java.security.MessageDigest
 import java.security.SecureRandom
 import java.net.URI
 import java.net.URLDecoder
@@ -233,18 +232,7 @@ object NostrNip46 {
         kind: Int,
         tags: List<List<String>>,
         content: String
-    ): ByteArray {
-        val jsonTags = JSONArray().apply { tags.forEach { put(JSONArray(it)) } }
-        val serialized = JSONArray()
-            .put(0)
-            .put(pubkey)
-            .put(createdAt)
-            .put(kind)
-            .put(jsonTags)
-            .put(content)
-            .toString()
-        return MessageDigest.getInstance("SHA-256").digest(serialized.toByteArray(Charsets.UTF_8))
-    }
+    ): ByteArray = nostrEventId(pubkey, createdAt, kind, tags, content)
 
     internal val paragraphReviewPermissions: String = buildList {
         add("get_public_key")
