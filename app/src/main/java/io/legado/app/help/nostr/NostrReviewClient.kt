@@ -36,7 +36,20 @@ object NostrReviewClient {
     /** 段落 `t` 标签前缀：`legado:paragraph:<归一化段落的 sha256>`；写端与 [matchParagraphs] 共用。 */
     internal const val PARAGRAPH_TAG_PREFIX = "legado:paragraph:"
 
-    data class Summary(val counts: Map<Int, Int>)
+    /** 容错匹配：摘录去空白后的最小尝试长度。 */
+    private const val MIN_FUZZY_LENGTH = 16
+
+    /** 容错匹配：整段在章内找不到时，改用中段的定长窗口。 */
+    private const val FUZZY_WINDOW = 24
+
+    /** 容错匹配：命中段落所需的最小重叠长度。 */
+    private const val MIN_OVERLAP_LENGTH = 16
+
+    data class Summary(
+        val counts: Map<Int, Int>,
+        /** 属于本章但未能定位到段落的摘录，其顶层评论；供章末汇总展示。 */
+        val unlocated: List<Comment> = emptyList()
+    )
 
     data class Comment(
         val id: String,
@@ -79,6 +92,7 @@ object NostrReviewClient {
             AppLog.put("查询 Nostr 段落摘录失败\n${it.localizedMessage}", it, tag = "Nostr")
         }.getOrDefault(emptyList())
         val matched = matchParagraphs(excerpts, paragraphs, chapterTitle)
+        val unlocated = loadUnlocatedComments(chapterUnlocated(excerpts, matched, chapterTitle))
         val excerptIds = matched.values.flatten().map { it.id }.distinct()
         if (excerptIds.isEmpty()) {
             val writableParagraphs = if (allowCreatingComments) {
@@ -88,7 +102,7 @@ object NostrReviewClient {
             } else {
                 emptyMap()
             }
-            return Summary(writableParagraphs)
+            return Summary(writableParagraphs, unlocated)
         }
 
         val comments = queryComments(excerptIds)
@@ -101,12 +115,50 @@ object NostrReviewClient {
                 else -> null
             }
         }.toMap()
-        if (!allowCreatingComments) return Summary(counts)
+        if (!allowCreatingComments) return Summary(counts, unlocated)
         val visibleCounts = counts.toMutableMap()
         paragraphs.forEachIndexed { index, paragraph ->
             if (paragraph.isNotBlank()) visibleCounts.putIfAbsent(index + 1, -1)
         }
-        return Summary(visibleCounts)
+        return Summary(visibleCounts, unlocated)
+    }
+
+    /** 属于本章（context 含本章标题）但没匹配到任何段落的摘录。 */
+    private fun chapterUnlocated(
+        excerpts: List<NostrEvent>,
+        matched: Map<Int, List<NostrEvent>>,
+        chapterTitle: String
+    ): List<NostrEvent> {
+        val identityTitle = normalizeForIdentity(chapterTitle)
+            .takeIf { it.length >= TITLE_MIN_LENGTH } ?: return emptyList()
+        val matchedIds = matched.values.flatten().mapTo(HashSet()) { it.id }
+        return excerpts.filter { event ->
+            event.id !in matchedIds &&
+                normalizeForIdentity(event.tagValues("context").firstOrNull().orEmpty())
+                    .contains(identityTitle)
+        }
+    }
+
+    /** 拉取未定位摘录的顶层评论（含楼内回复与点赞数），供章末汇总展示。 */
+    private suspend fun loadUnlocatedComments(excerpts: List<NostrEvent>): List<Comment> {
+        val ids = excerpts.map { it.id }.distinct()
+        if (ids.isEmpty()) return emptyList()
+        val comments = queryComments(ids)
+        if (comments.isEmpty()) return emptyList()
+        val reactions = queryReactions(comments.map { it.id })
+        val likeCounts = reactions.filter { it.content == "+" }
+            .groupBy { it.tagValues("e").firstOrNull().orEmpty() }
+            .mapValues { (_, events) -> events.distinctBy { it.pubkey }.size }
+        val commentsByExcerpt = comments.groupBy { it.rootId }
+        val excerptAuthors = excerpts.associate { it.id to it.pubkey }
+        return ids.flatMap { excerptId ->
+            buildThread(
+                commentsByExcerpt[excerptId].orEmpty(),
+                excerptId,
+                excerptAuthors[excerptId].orEmpty()
+            )
+        }.sortedByDescending { it.createdAt }
+            .map { it.toComment(likeCounts) }
     }
 
     suspend fun loadDetails(
@@ -310,7 +362,7 @@ object NostrReviewClient {
         paragraphs: List<String>,
         chapterTitle: String
     ): Map<Int, List<NostrEvent>> {
-        val normalizedParagraphs = paragraphs.map(::normalize)
+        val normalizedParagraphs = paragraphs.map(::normalizeContent)
         val identityTitle = normalizeForIdentity(chapterTitle)
             .takeIf { it.length >= TITLE_MIN_LENGTH }
         val indexesByText = normalizedParagraphs.mapIndexedNotNull { index, paragraph ->
@@ -319,9 +371,18 @@ object NostrReviewClient {
         val indexesByHash = normalizedParagraphs.mapIndexedNotNull { index, paragraph ->
             paragraph.takeIf { it.isNotEmpty() }?.let { sha256(it) to index }
         }.groupBy({ it.first }, { it.second })
+        // 去空白视图：重新分段只动边界、不改字符序，故 compact 文本与分段方式无关，用于容错定位。
+        val compactParagraphs = paragraphs.map(::compact)
+        val compactFull = compactParagraphs.joinToString("")
+        val compactStarts = IntArray(compactParagraphs.size)
+        var compactOffset = 0
+        compactParagraphs.forEachIndexed { index, text ->
+            compactStarts[index] = compactOffset
+            compactOffset += text.length
+        }
         val matches = mutableMapOf<Int, MutableList<NostrEvent>>()
         excerpts.forEach { event ->
-            val content = normalize(event.content)
+            val content = normalizeContent(event.content)
             val candidateIndexes = linkedSetOf<Int>()
             candidateIndexes.addAll(indexesByText[content].orEmpty())
             val contentHash = content.removePrefix("sha256:")
@@ -332,7 +393,7 @@ object NostrReviewClient {
             }
             val candidates = candidateIndexes.toList()
             val rawContext = event.tagValues("context").firstOrNull().orEmpty()
-            val context = normalize(rawContext)
+            val context = normalizeContent(rawContext)
             val titleScore = if (
                 identityTitle != null && normalizeForIdentity(rawContext).contains(identityTitle)
             ) 4 else 0
@@ -344,25 +405,84 @@ object NostrReviewClient {
                     ?.takeIf { it.length >= 8 && context.contains(it) }?.let { score++ }
                 score
             }
-            val selected = if (candidates.size > 1) {
-                val scores = candidates.associateWith { index ->
-                    titleScore + contextScore(index)
+            val selected = when {
+                // 精确匹配无候选：正文可能被重新分段（合段/拆段），改用去空白的整章文本定位。
+                candidates.isEmpty() -> fuzzyParagraphIndex(
+                    content = event.content,
+                    compactParagraphs = compactParagraphs,
+                    compactStarts = compactStarts,
+                    compactFull = compactFull,
+                    contextScore = contextScore
+                )?.let { index -> listOf(index) }.orEmpty()
+
+                candidates.size > 1 -> {
+                    val scores = candidates.associateWith { index ->
+                        titleScore + contextScore(index)
+                    }
+                    val bestScore = scores.values.maxOrNull() ?: 0
+                    val best = scores.filterValues { it == bestScore }.keys
+                    if (bestScore > 0 && best.size == 1) best else candidates
                 }
-                val bestScore = scores.values.maxOrNull() ?: 0
-                val best = scores.filterValues { it == bestScore }.keys
-                if (bestScore > 0 && best.size == 1) best else candidates
-            } else if (candidates.size == 1 && context.isNotEmpty() &&
-                titleScore == 0 && contextScore(candidates.single()) == 0
-            ) {
-                emptyList()
-            } else {
-                candidates
+
+                context.isNotEmpty() && titleScore == 0 &&
+                    contextScore(candidates.single()) == 0 -> emptyList()
+
+                else -> candidates
             }
             selected.forEach { index ->
                 matches.getOrPut(index + 1) { mutableListOf() }.add(event)
             }
         }
         return matches
+    }
+
+    /**
+     * 去空白后在整章文本里定位一段正文，返回与之重叠最大的段落下标。
+     * 先找整段；整段找不到时退回中段定长窗口（长片段包含）。多处并列时 context 分高者优先，仍并列取靠前；
+     * 重叠不足 [MIN_OVERLAP_LENGTH] 视为未命中。
+     */
+    private fun fuzzyParagraphIndex(
+        content: String,
+        compactParagraphs: List<String>,
+        compactStarts: IntArray,
+        compactFull: String,
+        contextScore: (Int) -> Int
+    ): Int? {
+        val condensed = compact(content)
+        if (condensed.length < MIN_FUZZY_LENGTH) return null
+        val needle = if (compactFull.contains(condensed)) {
+            condensed
+        } else {
+            if (condensed.length <= FUZZY_WINDOW) return null
+            val from = (condensed.length - FUZZY_WINDOW) / 2
+            condensed.substring(from, from + FUZZY_WINDOW)
+                .takeIf { compactFull.contains(it) } ?: return null
+        }
+        var bestIndex: Int? = null
+        var bestOverlap = 0
+        var bestContext = 0
+        var searchFrom = 0
+        while (true) {
+            val hit = compactFull.indexOf(needle, searchFrom)
+            if (hit < 0) break
+            val hitEnd = hit + needle.length
+            compactParagraphs.forEachIndexed { index, text ->
+                val paragraphStart = compactStarts[index]
+                val paragraphEnd = paragraphStart + text.length
+                val overlap = minOf(paragraphEnd, hitEnd) - maxOf(paragraphStart, hit)
+                if (overlap <= 0) return@forEachIndexed
+                val score = contextScore(index)
+                if (overlap > bestOverlap ||
+                    (overlap == bestOverlap && (bestIndex == null || score > bestContext))
+                ) {
+                    bestIndex = index
+                    bestOverlap = overlap
+                    bestContext = score
+                }
+            }
+            searchFrom = hit + 1
+        }
+        return if (bestIndex != null && bestOverlap >= MIN_OVERLAP_LENGTH) bestIndex else null
     }
 
     private suspend fun queryComments(excerptIds: List<String>): List<NostrEvent> {
@@ -526,13 +646,26 @@ object NostrReviewClient {
         replies = children.map { it.toComment(likeCounts, likedIds, myReactionIds) }
     )
 
+    /** v1 书标识专用归一化（仅折叠 ASCII 空白）。历史哈希依赖它，已冻结；正文匹配请用 [normalizeContent]。 */
     private fun normalize(value: String): String = value
         .replace(Regex("\\s+"), " ")
         .trim()
 
+    /**
+     * 正文/上下文归一化：折叠空白（含全角空格 U+3000）。
+     * 与 v1 书标识所用的 [normalize] 分离，避免改动历史哈希。
+     */
+    internal fun normalizeContent(value: String): String = value
+        .replace(Regex("[\\s\\u3000]+"), " ")
+        .trim()
+
+    /** 去掉全部空白（含 U+3000）：重新分段只动边界、不改字符序，故去空白后与分段方式无关。 */
+    private fun compact(value: String): String = value
+        .replace(Regex("[\\s\\u3000]+"), "")
+
     /** 段落 `t` 标签值；其归一化与哈希必须与 [matchParagraphs] 的 `indexesByHash` 一致。 */
     internal fun paragraphTagValue(paragraph: String): String =
-        PARAGRAPH_TAG_PREFIX + sha256(normalize(paragraph))
+        PARAGRAPH_TAG_PREFIX + sha256(normalizeContent(paragraph))
 
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8))

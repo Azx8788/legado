@@ -14,6 +14,8 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.View
+import android.widget.ScrollView
+import android.widget.TextView
 import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -326,6 +328,14 @@ class ReadBookActivity : BaseReadBookActivity(),
             return size > 5
         }
     }
+    private val nostrReviewUnlocatedCache =
+        object : LinkedHashMap<String, List<NostrReviewClient.Comment>>(8, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, List<NostrReviewClient.Comment>>
+            ): Boolean {
+                return size > 5
+            }
+        }
     private val nostrReviewSummaryLoadingKeys = HashSet<String>()
     private val reviewSummaryPrefetchingKeys = HashSet<String>()
     private val nostrReviewDetailWarmingKeys = HashSet<String>()
@@ -762,6 +772,9 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
         synchronized(nostrReviewSummaryCache) {
             nostrReviewSummaryCache.clear()
+        }
+        synchronized(nostrReviewUnlocatedCache) {
+            nostrReviewUnlocatedCache.clear()
         }
         synchronized(nostrReviewSummaryLoadingKeys) {
             nostrReviewSummaryLoadingKeys.clear()
@@ -1812,6 +1825,10 @@ class ReadBookActivity : BaseReadBookActivity(),
     override fun onReviewClick(paragraphNum: Int, count: Int) {
         // -1 identifies the chapter title; 0 is the only invalid paragraph id.
         if (paragraphNum == 0) return
+        if (paragraphNum == ChapterProvider.REVIEW_ID_CHAPTER_END) {
+            showUnlocatedReviewDialog()
+            return
+        }
         if (count < 0) {
             if (AppConfig.nostrReviewEnabled) {
                 showDialogFragment(ReviewDetailDialog(paragraphNum, 0))
@@ -1841,6 +1858,42 @@ class ReadBookActivity : BaseReadBookActivity(),
             return
         }
         showDialogFragment(ReviewDetailDialog(paragraphNum, count))
+    }
+
+    /** 章末「未定位段评」入口：把本章未能定位到段落的评论汇总展示。 */
+    private fun showUnlocatedReviewDialog() {
+        val book = ReadBook.book ?: return
+        val key = buildReviewSummaryKey(book, ReadBook.durChapterIndex)
+        val comments = synchronized(nostrReviewUnlocatedCache) { nostrReviewUnlocatedCache[key] }
+        if (comments.isNullOrEmpty()) {
+            toastOnUi(getString(R.string.nostr_review))
+            return
+        }
+        val textView = TextView(this).apply {
+            text = buildString { appendUnlocatedComments(comments, 0) }
+            val pad = 16.dpToPx()
+            setPadding(pad, pad, pad, pad)
+            setTextIsSelectable(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.nostr_review)
+            .setView(ScrollView(this).apply { addView(textView) })
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    private fun StringBuilder.appendUnlocatedComments(
+        comments: List<NostrReviewClient.Comment>,
+        depth: Int
+    ) {
+        val indent = "    ".repeat(depth)
+        comments.forEach { comment ->
+            append(indent).append(comment.name).append("  ").append(comment.time)
+            if (comment.likeCount > 0) append("  +").append(comment.likeCount)
+            append('\n')
+            append(indent).append(comment.content).append('\n')
+            appendUnlocatedComments(comment.replies, depth + 1)
+        }
     }
 
     override fun onStart() {
@@ -2047,6 +2100,9 @@ class ReadBookActivity : BaseReadBookActivity(),
                 nostrReviewSummaryCache[key] = result
             }
             writeDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key, result)
+            synchronized(nostrReviewUnlocatedCache) {
+                nostrReviewUnlocatedCache[key] = summary.unlocated
+            }
             pruneDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, currentBook, ReadBook.durChapterIndex)
             applyReviewSummary(
                 key,
@@ -2100,6 +2156,9 @@ class ReadBookActivity : BaseReadBookActivity(),
             val result = ReviewSummaryResult(summary.counts, emptyMap())
             synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = result }
             writeDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key, result)
+            synchronized(nostrReviewUnlocatedCache) {
+                nostrReviewUnlocatedCache[key] = summary.unlocated
+            }
             warmNostrReviewDetails(book, chapterIndex, textChapter, summary.counts)
         }.onError {
             synchronized(reviewSummaryPrefetchingKeys) {
@@ -2280,13 +2339,20 @@ class ReadBookActivity : BaseReadBookActivity(),
             }
         }
         val keys = result.keys
+        val unlocatedCount = synchronized(nostrReviewUnlocatedCache) {
+            nostrReviewUnlocatedCache[key]?.size ?: 0
+        }
         // applyReviewSummary 可能直接由 ReadBook 的 IO 协程(contentLoadFinish)调用，
         // 而 setReviewProviders / upContent 会更新排版列并刷新视图，必须在主线程执行，
         // 否则会抛出 CalledFromWrongThreadException(Only the original thread ... can touch its views)。
         runOnUiThread {
             ChapterProvider.setReviewProviders(
                 countProvider = { targetChapterIndex, reviewId ->
-                    if (targetChapterIndex != chapterIndex) 0 else counts[reviewId] ?: 0
+                    when {
+                        targetChapterIndex != chapterIndex -> 0
+                        reviewId == ChapterProvider.REVIEW_ID_CHAPTER_END -> unlocatedCount
+                        else -> counts[reviewId] ?: 0
+                    }
                 },
                 keyProvider = { targetChapterIndex, reviewId ->
                     if (targetChapterIndex != chapterIndex) null else keys[reviewId]

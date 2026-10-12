@@ -203,6 +203,12 @@ object ChapterProvider {
 
     private const val reviewTitleOffset = 1
 
+    /** 章末「未定位段评」入口的保留 reviewId；与真实段落号（从 1 起）不冲突。 */
+    const val REVIEW_ID_CHAPTER_END = 1_000_000_000
+
+    /** 章末入口的占位文本：一条仅用于承载气泡的空白行（无未定位时不着气泡）。 */
+    const val REVIEW_END_MARKER = "\u3000"
+
     init {
         upStyle()
     }

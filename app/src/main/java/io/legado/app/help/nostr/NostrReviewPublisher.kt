@@ -54,8 +54,7 @@ object NostrReviewPublisher {
         val text = comment.trim()
         require(text.isNotEmpty()) { "Comment cannot be empty" }
         val paragraph = paragraphs.getOrNull(paragraphIndex - 1)
-            ?.replace(Regex("\\s+"), " ")
-            ?.trim()
+            ?.let(NostrReviewClient::normalizeContent)
             ?.takeIf { it.isNotEmpty() }
             ?: throw IllegalArgumentException("Paragraph is unavailable")
         val session = NostrSignerStore.load()

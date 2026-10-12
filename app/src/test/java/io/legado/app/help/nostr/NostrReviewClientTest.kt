@@ -390,4 +390,135 @@ class NostrReviewClientTest {
         assertEquals(first.method, retry.method)
         assertEquals(first.params, retry.params)
     }
+
+    @Test
+    fun normalizeContentCollapsesAsciiAndFullWidthSpaces() {
+        assertEquals("a b", NostrReviewClient.normalizeContent("a\u3000\u3000b"))
+        assertEquals("a b", NostrReviewClient.normalizeContent("  a\tb  "))
+    }
+
+    @Test
+    fun paragraphTagValueIgnoresFullWidthSpace() {
+        assertEquals(
+            NostrReviewClient.paragraphTagValue("a\u3000b"),
+            NostrReviewClient.paragraphTagValue("a b")
+        )
+    }
+
+    @Test
+    fun legacyBookIdentifierStaysBlindToFullWidthSpace() {
+        // v1 书标识沿用旧 normalize（\s 不含 U+3000），不应被新的内容归一化波及。
+        assertNotEquals(
+            NostrReviewClient.bookIdentifier("三\u3000体", "刘慈欣"),
+            NostrReviewClient.bookIdentifier("三 体", "刘慈欣")
+        )
+    }
+
+    @Test
+    fun paragraphMatchIgnoresFullWidthSpaceDifference() {
+        val paragraphs = listOf(
+            "上一段结尾。",
+            "这是\u3000全角空格\u3000的正文。",
+            "下一段开头。"
+        )
+        val excerpt = NostrReviewClient.NostrEvent(
+            id = "event-id",
+            pubkey = "pubkey",
+            content = "这是 全角空格 的正文。",
+            createdAt = 1,
+            kind = 9802,
+            tags = emptyList()
+        )
+
+        val matches = NostrReviewClient.matchParagraphs(listOf(excerpt), paragraphs, chapterTitle = "")
+
+        assertTrue(matches.containsKey(2))
+    }
+
+    @Test
+    fun paragraphMatchFindsMergedParagraph() {
+        // 旧的一段被并入更长的一段：精确不相等，靠长片段包含定位。
+        val paragraphs = listOf(
+            "开头段落。",
+            "前半句被并入更长的一段；这是原来的段落正文。后面还有别的话。",
+            "结尾段落。"
+        )
+        val excerpt = NostrReviewClient.NostrEvent(
+            id = "event-id",
+            pubkey = "pubkey",
+            content = "前半句被并入更长的一段；这是原来的段落正文。",
+            createdAt = 1,
+            kind = 9802,
+            tags = emptyList()
+        )
+
+        val matches = NostrReviewClient.matchParagraphs(listOf(excerpt), paragraphs, chapterTitle = "")
+
+        assertTrue(matches.containsKey(2))
+    }
+
+    @Test
+    fun paragraphMatchOnSplitAttachesToLargestOverlapParagraph() {
+        // 旧的一段被拆成两段：只挂重叠最大的一段。
+        val first = "上半段的文字足够长以便达到重叠阈值的下限要求。"
+        val second = "下半段的文字同样够长但比上半段短一些。"
+        val paragraphs = listOf("无关的开头段落。", first, second, "无关的结尾段落。")
+        val excerpt = NostrReviewClient.NostrEvent(
+            id = "event-id",
+            pubkey = "pubkey",
+            content = first + second,
+            createdAt = 1,
+            kind = 9802,
+            tags = emptyList()
+        )
+
+        val matches = NostrReviewClient.matchParagraphs(listOf(excerpt), paragraphs, chapterTitle = "")
+
+        assertEquals(setOf(2), matches.keys)
+    }
+
+    @Test
+    fun paragraphMatchUsesContextWhenFragmentRepeats() {
+        // 同一段文字在本章出现两次且重叠相等：按 context 就近消歧。
+        val repeated = "重复出现的一段文字需要足够长才能进入容错匹配流程。"
+        val paragraphs = listOf(
+            "第一处的前一段内容足够长。", repeated, "第一处的后一段内容足够长。",
+            "第二处的前一段内容足够长。", repeated, "第二处的后一段内容足够长。"
+        )
+        val excerpt = NostrReviewClient.NostrEvent(
+            id = "event-id",
+            pubkey = "pubkey",
+            content = repeated + "尾巴",
+            createdAt = 1,
+            kind = 9802,
+            tags = listOf(listOf("context", "第二处的前一段内容足够长。第二处的后一段内容足够长。"))
+        )
+
+        val matches = NostrReviewClient.matchParagraphs(listOf(excerpt), paragraphs, chapterTitle = "")
+
+        assertEquals(setOf(5), matches.keys)
+    }
+
+    @Test
+    fun paragraphMatchRejectsFragmentBelowThreshold() {
+        // 被拆成两段且每段重叠都不足阈值：宁缺毋滥。
+        val first = "aaaabbbbccccddd"
+        val second = "eeeeffffgggghhh"
+        val excerpt = NostrReviewClient.NostrEvent(
+            id = "event-id",
+            pubkey = "pubkey",
+            content = first + second,
+            createdAt = 1,
+            kind = 9802,
+            tags = emptyList()
+        )
+
+        val matches = NostrReviewClient.matchParagraphs(
+            listOf(excerpt),
+            listOf(first, second),
+            chapterTitle = ""
+        )
+
+        assertTrue(matches.isEmpty())
+    }
 }
