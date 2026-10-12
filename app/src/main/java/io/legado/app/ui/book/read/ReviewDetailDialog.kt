@@ -282,7 +282,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 if (comment.isBlank()) return@setOnClickListener
                 binding.rotateLoading.visible()
                 lifecycleScope.launch {
-                    runCatching {
+                    val result = runCatching {
                         val book = ReadBook.book ?: error("No book is open")
                         val chapterIndex = ReadBook.durChapterIndex
                         val chapter = appDb.bookChapterDao.getChapter(book.bookUrl, chapterIndex)
@@ -299,7 +299,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                                 comment = comment
                             )
                         }
-                    }.onSuccess {
+                    }.onFailure { if (it is CancellationException) throw it }
+                    result.onSuccess {
                         binding.rotateLoading.gone()
                         dialog.dismiss()
                         loadDetailPage(paragraphNum, 1, append = false)
@@ -1339,7 +1340,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                     val content = editBinding.editView.text?.toString().orEmpty().trim()
                     if (content.isBlank()) return@setOnClickListener
                     lifecycleScope.launch {
-                        runCatching {
+                        val result = runCatching {
                             val book = ReadBook.book ?: error("No book is open")
                             withContext(IO) {
                                 NostrReviewPublisher.replyToComment(
@@ -1351,7 +1352,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                                     content = content
                                 )
                             }
-                        }.onSuccess {
+                        }.onFailure { if (it is CancellationException) throw it }
+                        result.onSuccess {
                             dialog.dismiss()
                             loadDetailPage(paragraphNum, 1, append = false)
                         }.onFailure {
@@ -1367,11 +1369,12 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
 
         private fun publishNostrReaction(commentId: String, authorPubkey: String) {
             lifecycleScope.launch {
-                runCatching {
+                val result = runCatching {
                     withContext(IO) {
                         NostrReviewPublisher.reactToComment(commentId, authorPubkey)
                     }
-                }.onSuccess {
+                }.onFailure { if (it is CancellationException) throw it }
+                result.onSuccess {
                     loadDetailPage(paragraphNum, 1, append = false)
                 }.onFailure {
                     context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
