@@ -304,4 +304,62 @@ class NostrReviewClientTest {
         assertEquals("legado:book", arrays.first { it.getString(0) == "k" }.getString(1))
         assertEquals(context, arrays.first { it.getString(0) == "context" }.getString(1))
     }
+
+    @Test
+    fun nip46ResponseWithForeignIdIsReturnedInsteadOfRejected() {
+        val clientSecret = ("00".repeat(31) + "01").hexToBytes()
+        val signerSecret = ("00".repeat(31) + "02").hexToBytes()
+        val clientPublic = fr.acinq.secp256k1.Secp256k1.pubkeyCreate(clientSecret).copyOfRange(1, 33)
+        val signerPublic = fr.acinq.secp256k1.Secp256k1.pubkeyCreate(signerSecret).copyOfRange(1, 33)
+        val clientPublicHex = clientPublic.joinToString("") { "%02x".format(it) }
+        val signerPublicHex = signerPublic.joinToString("") { "%02x".format(it) }
+
+        val conversationKey = NostrNip44.conversationKey(clientSecret, signerPublic)
+        val content = NostrNip44.encrypt(
+            org.json.JSONObject().put("id", "late-request-id").put("result", "ack").toString(),
+            conversationKey
+        )
+        val tags = listOf(listOf("p", clientPublicHex))
+        val createdAt = 100L
+        val eventId = nostrEventId(signerPublicHex, createdAt, 24133, tags, content)
+        val event = org.json.JSONObject()
+            .put("id", eventId.joinToString("") { "%02x".format(it) })
+            .put("pubkey", signerPublicHex)
+            .put("created_at", createdAt)
+            .put("kind", 24133)
+            .put("tags", org.json.JSONArray().put(org.json.JSONArray().put("p").put(clientPublicHex)))
+            .put("content", content)
+            .put(
+                "sig",
+                fr.acinq.secp256k1.Secp256k1.signSchnorr(eventId, signerSecret, null)
+                    .joinToString("") { "%02x".format(it) }
+            )
+
+        val response = NostrNip46.decryptResponseOrNull(
+            eventJson = event,
+            keyPair = NostrNip46.ClientKeyPair(clientSecret, clientPublicHex),
+            signerPubkey = signerPublicHex
+        )
+
+        // 不再因 id 不匹配抛异常：把响应连同自身 id 交回调用方，由调用方比对后丢弃。
+        assertEquals("late-request-id", response?.id)
+        assertEquals("ack", response?.result)
+    }
+
+    @Test
+    fun renewRequestKeepsMethodAndParamsButChangesRequestId() {
+        val clientSecret = ("00".repeat(31) + "01").hexToBytes()
+        val clientPublic = fr.acinq.secp256k1.Secp256k1.pubkeyCreate(clientSecret)
+            .copyOfRange(1, 33)
+            .joinToString("") { "%02x".format(it) }
+        val keyPair = NostrNip46.ClientKeyPair(clientSecret, clientPublic)
+        val signerPubkey = "11".repeat(32)
+
+        val first = NostrNip46.buildGetPublicKeyRequest(keyPair, signerPubkey, createdAt = 100)
+        val retry = NostrNip46.renewRequest(keyPair, signerPubkey, first)
+
+        assertNotEquals(first.id, retry.id)
+        assertEquals(first.method, retry.method)
+        assertEquals(first.params, retry.params)
+    }
 }

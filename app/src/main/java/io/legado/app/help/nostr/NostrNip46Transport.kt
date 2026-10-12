@@ -7,6 +7,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import okhttp3.Request
@@ -21,6 +22,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -35,6 +37,10 @@ internal val nostrWebSocketClient by lazy {
 }
 
 object NostrNip46Transport {
+
+    private const val NIP46_REQUEST_TIMEOUT_MILLIS = 65_000L
+    private const val NIP46_MAX_RETRIES = 1
+    private const val NIP46_RETRY_DELAY_MILLIS = 2_000L
 
     suspend fun publish(relays: List<String>, event: JSONObject, timeoutMillis: Long = 15_000) {
         val validRelays = relays.distinct().filter { relay -> relay.startsWith("wss://", true) }
@@ -235,22 +241,63 @@ object NostrNip46Transport {
         }
     }
 
+    /**
+     * 发起一次 NIP-46 请求。超时会换新 request id 重试一次，重试耗尽才作为失败上报。
+     * 只按 id 匹配回包：不是当前请求的回包会被丢弃并等下一次，不会串到本轮。
+     */
     suspend fun request(
         connection: NostrNip46.BunkerConnection,
         keyPair: NostrNip46.ClientKeyPair,
         request: NostrNip46.RpcRequest,
-        timeoutMillis: Long = 90_000,
+        timeoutMillis: Long = NIP46_REQUEST_TIMEOUT_MILLIS,
         onAuthUrl: ((String) -> Unit)? = null
+    ): NostrNip46.RpcResponse {
+        val relays = connection.relays.distinct().filter { it.startsWith("wss://", true) }
+        require(relays.isNotEmpty()) { "No valid Relay available for NIP-46 request" }
+        var current = request
+        for (attempt in 0..NIP46_MAX_RETRIES) {
+            if (attempt > 0) {
+                delay(NIP46_RETRY_DELAY_MILLIS)
+                // 换新 request id 重发：上一轮迟到的回包 id 不同，会被当无关回包丢弃。
+                current = NostrNip46.renewRequest(keyPair, connection.signerPubkey, current)
+            }
+            val outcome = runCatching {
+                awaitResponse(keyPair, connection.signerPubkey, current, relays, timeoutMillis, onAuthUrl)
+            }
+            outcome.getOrNull()?.let { return it }
+            val failure = outcome.exceptionOrNull()!!
+            // runCatching 也会捕获协程取消：真正的取消必须原样重抛。
+            if (failure is CancellationException && !failure.isNip46Timeout()) throw failure
+            if (!failure.isNip46Timeout() || attempt == NIP46_MAX_RETRIES) throw failure
+            AppLog.put(
+                "NIP-46 request timed out after ${timeoutMillis}ms, retrying with a new request id (${attempt + 1}/$NIP46_MAX_RETRIES)",
+                failure,
+                tag = "Nostr"
+            )
+        }
+        error("NIP-46 request ended without a response")
+    }
+
+    private fun Throwable.isNip46Timeout(): Boolean = this is TimeoutCancellationException ||
+        (this is NostrRelayException && cause is TimeoutCancellationException)
+
+    private suspend fun awaitResponse(
+        keyPair: NostrNip46.ClientKeyPair,
+        signerPubkey: String,
+        request: NostrNip46.RpcRequest,
+        relays: List<String>,
+        timeoutMillis: Long,
+        onAuthUrl: ((String) -> Unit)?
     ): NostrNip46.RpcResponse = withRelayErrorReporting(
         timeoutMillis = timeoutMillis,
-        relays = connection.relays.distinct().filter { it.startsWith("wss://", true) },
+        relays = relays,
         failureLabel = "NIP-46 request"
     ) { relays, relayErrors ->
         suspendCancellableCoroutine { continuation ->
             val completed = AtomicBoolean(false)
             val failedRelays = AtomicInteger(0)
             val sockets = CopyOnWriteArrayList<WebSocket>()
-            val expectedAuthor = connection.signerPubkey
+            val expectedAuthor = signerPubkey
             val authUrlShown = AtomicBoolean(false)
 
             fun closeSockets(code: Int, reason: String) {
@@ -335,33 +382,44 @@ object NostrNip46Transport {
                                 }
                                 return
                             }
-                            runCatching {
-                                if (message.optString(1) != subscriptionId) return
-                                val event = message.optJSONObject(2) ?: return
-                                val result = NostrNip46.decryptResponse(
-                                    eventJson = event,
-                                    keyPair = keyPair,
-                                    signerPubkey = expectedAuthor,
-                                    expectedRequestId = request.id
-                                )
-                                if (result.result == "auth_url" && onAuthUrl != null) {
-                                    val authUrl = result.error
-                                        ?: throw IllegalArgumentException("NIP-46 auth_url response has no URL")
-                                    if (authUrlShown.compareAndSet(false, true)) {
-                                        onAuthUrl(authUrl)
-                                    }
-                                    return@runCatching
-                                }
-                                if (completed.compareAndSet(false, true)) {
-                                    closeSockets(1000, "response received")
-                                    continuation.resume(result)
-                                }
-                            }.onFailure {
+                            if (message.optString(1) != subscriptionId) return
+                            val event = message.optJSONObject(2) ?: return
+                            val response = NostrNip46.decryptResponseOrNull(
+                                eventJson = event,
+                                keyPair = keyPair,
+                                signerPubkey = expectedAuthor
+                            )
+                            if (response == null) {
+                                // 解不开 / 格式或寻址不符：不是本次请求可用的回包，记日志后忽略。
                                 AppLog.put(
-                                    "NIP-46 response from ${relayHost(relay)} was rejected",
-                                    it,
+                                    "NIP-46 response from ${relayHost(relay)} could not be decrypted (ignored)",
                                     tag = "Nostr"
                                 )
+                                return
+                            }
+                            if (response.id != request.id) {
+                                // 与本次请求无关或上一轮重试迟到的回包：丢弃，继续等本次结果。
+                                AppLog.put(
+                                    "NIP-46 收到非当前请求的回包（忽略）: ${response.id} != ${request.id}",
+                                    tag = "Nostr"
+                                )
+                                return
+                            }
+                            if (response.result == "auth_url" && onAuthUrl != null) {
+                                val authUrl = response.error
+                                if (authUrl == null) {
+                                    AppLog.put(
+                                        "NIP-46 auth_url response from ${relayHost(relay)} has no URL (ignored)",
+                                        tag = "Nostr"
+                                    )
+                                } else if (authUrlShown.compareAndSet(false, true)) {
+                                    onAuthUrl(authUrl)
+                                }
+                                return
+                            }
+                            if (completed.compareAndSet(false, true)) {
+                                closeSockets(1000, "response received")
+                                continuation.resume(response)
                             }
                         }
 

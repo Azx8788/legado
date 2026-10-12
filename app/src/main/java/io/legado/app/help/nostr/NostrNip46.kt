@@ -34,7 +34,9 @@ object NostrNip46 {
 
     data class RpcRequest(
         val id: String,
-        val event: JSONObject
+        val event: JSONObject,
+        val method: String,
+        val params: List<String>
     )
 
     data class RpcResponse(
@@ -165,27 +167,31 @@ object NostrNip46 {
         )
     }
 
-    fun decryptResponse(
+    /**
+     * 解出 NIP-46 响应，并保留响应自身的 id（不再与期望 id 比较）。
+     *
+     * 事件格式、寻址或解密任一不符时返回 null，调用方据此记日志并忽略该回包；
+     * id 由调用方比对，未知/迟到的回包静默丢弃，不再把“id 不匹配”当成请求失败。
+     * 不强制响应作者 == 签名器公钥：会话密钥由签名器公钥派生，MAC 不过就会被拒，
+     * 去掉硬校验可兼容“用另一个密钥回包”的非标准 bunker。
+     */
+    fun decryptResponseOrNull(
         eventJson: JSONObject,
         keyPair: ClientKeyPair,
-        signerPubkey: String,
-        expectedRequestId: String
-    ): RpcResponse {
-        val event = NostrReviewClient.NostrEvent.fromJson(eventJson)
-            ?: throw IllegalArgumentException("Invalid signed NIP-46 response event")
-        require(event.kind == 24133) { "Unexpected NIP-46 response kind" }
-        // 不强制响应作者 == 签名器公钥：会话密钥由签名器公钥派生，MAC 不过就会拒绝，
-        // 去掉硬校验可兼容“用另一个密钥回包”的非标准 bunker。
-        require(keyPair.publicKey in event.tagValues("p")) { "NIP-46 response is not addressed to this client" }
-        val conversationKey = NostrNip44.conversationKey(keyPair.privateKey, signerPubkey.hexToByteArray())
-        val payload = NostrNip44.decrypt(event.content, conversationKey)
-        val response = JSONObject(payload)
-        require(response.optString("id") == expectedRequestId) { "NIP-46 response ID does not match" }
-        val error = response.optString("error").takeIf { it.isNotBlank() }
+        signerPubkey: String
+    ): RpcResponse? {
+        val event = NostrReviewClient.NostrEvent.fromJson(eventJson) ?: return null
+        if (event.kind != 24133) return null
+        if (keyPair.publicKey !in event.tagValues("p")) return null
+        val signerKey = runCatching { signerPubkey.hexToByteArray() }.getOrNull() ?: return null
+        val conversationKey = NostrNip44.conversationKey(keyPair.privateKey, signerKey)
+        val payload = runCatching { NostrNip44.decrypt(event.content, conversationKey) }
+            .getOrNull() ?: return null
+        val response = runCatching { JSONObject(payload) }.getOrNull() ?: return null
         return RpcResponse(
-            id = expectedRequestId,
+            id = response.optString("id"),
             result = response.optString("result").takeIf { it.isNotBlank() },
-            error = error
+            error = response.optString("error").takeIf { it.isNotBlank() }
         )
     }
 
@@ -234,8 +240,24 @@ object NostrNip46 {
             .put("id", requestId)
             .put("method", method)
             .put("params", JSONArray(params))
-        return RpcRequest(requestId, buildMessageEvent(keyPair, signerPubkey, payload, createdAt))
+        return RpcRequest(
+            id = requestId,
+            event = buildMessageEvent(keyPair, signerPubkey, payload, createdAt),
+            method = method,
+            params = params
+        )
     }
+
+    /**
+     * 用同一 method/params 生成一个带新 request id 的请求事件。
+     * NIP-46 按 id 匹配回包，重试必须换新 id，否则上一轮迟到的回包会被误算到本轮。
+     */
+    internal fun renewRequest(
+        keyPair: ClientKeyPair,
+        signerPubkey: String,
+        previous: RpcRequest,
+        createdAt: Long = System.currentTimeMillis() / 1000
+    ): RpcRequest = buildRequest(keyPair, signerPubkey, previous.method, previous.params, createdAt)
 
     /** 对 nostrconnect 阶段收到的 connect 请求回 an acknowledgment，签名器才会继续。 */
     fun buildConnectAck(
