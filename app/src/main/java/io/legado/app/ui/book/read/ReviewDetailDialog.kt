@@ -40,6 +40,7 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.help.glide.ImageLoader
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.nostr.NostrProfileStore
 import io.legado.app.help.nostr.NostrReviewClient
 import io.legado.app.help.nostr.NostrReviewPublisher
 import io.legado.app.help.nostr.NostrSignerStore
@@ -697,6 +698,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             }
             currentPage = page
             renderUiItems()
+            refreshProfilesForDisplay()
             if (!append && page == 1) {
                 detailCacheKey()?.let { cacheKey ->
                     val snapshot = ArrayList(detailItems)
@@ -812,22 +814,66 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         return jsReviewItemToUi(item, flatReplies)
     }
 
-    private fun NostrReviewClient.Comment.toReviewDetailItem(): ReviewDetailItem = ReviewDetailItem(
-        id = id,
-        avatar = null,
-        name = name,
-        nostrAuthorPubkey = authorPubkey,
-        nostrRootExcerptId = rootExcerptId,
-        nostrRootExcerptPubkey = rootExcerptPubkey,
-        badges = emptyList(),
-        content = content,
-        imageUrl = null,
-        audioUrl = null,
-        time = time,
-        likeCount = likeCount,
-        replyCount = replies.size,
-        replies = replies.map { it.toReviewDetailItem() }
-    )
+    private fun NostrReviewClient.Comment.toReviewDetailItem(): ReviewDetailItem {
+        val profile = NostrProfileStore.get(authorPubkey)
+        return ReviewDetailItem(
+            id = id,
+            avatar = profile?.picture,
+            name = profile?.bestName ?: name,
+            nostrAuthorPubkey = authorPubkey,
+            nostrRootExcerptId = rootExcerptId,
+            nostrRootExcerptPubkey = rootExcerptPubkey,
+            badges = emptyList(),
+            content = content,
+            imageUrl = null,
+            audioUrl = null,
+            time = time,
+            likeCount = likeCount,
+            replyCount = replies.size,
+            replies = replies.map { it.toReviewDetailItem() }
+        )
+    }
+
+    /** 列表涉及到的 Nostr 作者（含回复），用于批量拉资料。 */
+    private fun collectNostrAuthors(items: List<ReviewDetailItem>): List<String> {
+        val result = LinkedHashSet<String>()
+        fun walk(list: List<ReviewDetailItem>) {
+            list.forEach { item ->
+                item.nostrAuthorPubkey?.takeIf { it.isNotBlank() }?.let { result.add(it) }
+                walk(item.replies)
+            }
+        }
+        walk(items)
+        return result.toList()
+    }
+
+    /** 把本地缓存的资料（头像/昵称）套到条目上，递归到回复。 */
+    private fun ReviewDetailItem.withCachedProfile(): ReviewDetailItem {
+        val newReplies = if (replies.isEmpty()) replies else replies.map { it.withCachedProfile() }
+        val profile = nostrAuthorPubkey?.takeIf { it.isNotBlank() }?.let { NostrProfileStore.get(it) }
+        if (profile == null) {
+            return if (newReplies === replies) this else copy(replies = newReplies)
+        }
+        return copy(
+            avatar = profile.picture ?: avatar,
+            name = profile.bestName ?: name,
+            replies = newReplies
+        )
+    }
+
+    /** 缓存命中的先渲染；缺资料或过期的作者拉一次，拿到后刷新列表。 */
+    private fun refreshProfilesForDisplay() {
+        val authors = collectNostrAuthors(detailItems)
+        if (authors.isEmpty()) return
+        lifecycleScope.launch {
+            val fetched = NostrProfileStore.sync(authors)
+            if (fetched <= 0) return@launch
+            for (index in detailItems.indices) {
+                detailItems[index] = detailItems[index].withCachedProfile()
+            }
+            renderUiItems()
+        }
+    }
 
     private fun jsReviewItemToUi(
         item: JsSourceReview.ReviewDetailItem,
