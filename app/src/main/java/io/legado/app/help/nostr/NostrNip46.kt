@@ -47,6 +47,16 @@ object NostrNip46 {
         val requestId: String
     )
 
+    /**
+     * nostrconnect 阶段的两种消息变体：
+     * - 签名器直接回 connect 响应（result == secret）；
+     * - 签名器发 connect 请求（method == "connect"），需要客户端回 ack 才会继续。
+     */
+    data class NostrConnectMessage(
+        val approval: NostrConnectApproval,
+        val isConnectRequest: Boolean
+    )
+
     fun parseBunkerUri(value: String): BunkerConnection {
         val uri = URI(value.trim())
         require(uri.scheme.equals("bunker", ignoreCase = true)) { "Expected a bunker:// URI" }
@@ -163,7 +173,8 @@ object NostrNip46 {
         val event = NostrReviewClient.NostrEvent.fromJson(eventJson)
             ?: throw IllegalArgumentException("Invalid signed NIP-46 response event")
         require(event.kind == 24133) { "Unexpected NIP-46 response kind" }
-        require(event.pubkey == signerPubkey) { "NIP-46 response is from an unknown signer" }
+        // 不强制响应作者 == 签名器公钥：会话密钥由签名器公钥派生，MAC 不过就会拒绝，
+        // 去掉硬校验可兼容“用另一个密钥回包”的非标准 bunker。
         require(keyPair.publicKey in event.tagValues("p")) { "NIP-46 response is not addressed to this client" }
         val conversationKey = NostrNip44.conversationKey(keyPair.privateKey, signerPubkey.hexToByteArray())
         val payload = NostrNip44.decrypt(event.content, conversationKey)
@@ -177,20 +188,37 @@ object NostrNip46 {
         )
     }
 
-    fun validateNostrConnectApproval(
+    fun decodeNostrConnectMessage(
         eventJson: JSONObject,
         keyPair: ClientKeyPair,
         expectedSecret: String
-    ): NostrConnectApproval {
+    ): NostrConnectMessage {
         val event = NostrReviewClient.NostrEvent.fromJson(eventJson)
-            ?: throw IllegalArgumentException("Invalid signed nostrconnect response")
-        require(event.kind == 24133) { "Unexpected nostrconnect response kind" }
-        require(keyPair.publicKey in event.tagValues("p")) { "Response is not addressed to this client" }
-        val conversationKey = NostrNip44.conversationKey(keyPair.privateKey, event.pubkey.hexToByteArray())
-        val response = JSONObject(NostrNip44.decrypt(event.content, conversationKey))
-        require(response.optString("result") == expectedSecret) { "Nostr connect secret did not match" }
-        require(response.optString("error").isBlank()) { response.optString("error") }
-        return NostrConnectApproval(event.pubkey, response.optString("id"))
+            ?: throw IllegalArgumentException("Invalid signed nostrconnect message")
+        require(event.kind == 24133) { "Unexpected nostrconnect message kind" }
+        require(keyPair.publicKey in event.tagValues("p")) { "Message is not addressed to this client" }
+        val conversationKey = NostrNip44.conversationKey(
+            keyPair.privateKey,
+            event.pubkey.hexToByteArray()
+        )
+        val payload = JSONObject(NostrNip44.decrypt(event.content, conversationKey))
+        payload.optString("error").takeIf { it.isNotBlank() }
+            ?.let { throw IllegalArgumentException(it) }
+        val id = payload.optString("id").takeIf { it.isNotBlank() }
+            ?: throw IllegalArgumentException("Nostrconnect message has no id")
+        return if (payload.has("method")) {
+            require(payload.optString("method") == "connect") {
+                "Unsupported nostrconnect method ${payload.optString("method")}"
+            }
+            val params = payload.optJSONArray("params") ?: JSONArray()
+            require(params.optString(1) == expectedSecret) { "Nostr connect secret did not match" }
+            NostrConnectMessage(NostrConnectApproval(event.pubkey, id), isConnectRequest = true)
+        } else {
+            require(payload.optString("result") == expectedSecret) {
+                "Nostr connect secret did not match"
+            }
+            NostrConnectMessage(NostrConnectApproval(event.pubkey, id), isConnectRequest = false)
+        }
     }
 
     private fun buildRequest(
@@ -200,22 +228,44 @@ object NostrNip46 {
         params: List<String>,
         createdAt: Long
     ): RpcRequest {
-        require(signerPubkey.isHexKey()) { "Invalid remote signer public key" }
         val requestId = ByteArray(16).also(secureRandom::nextBytes).toHex()
-        val plaintext = JSONObject()
+        val payload = JSONObject()
             .put("id", requestId)
             .put("method", method)
             .put("params", JSONArray(params))
-            .toString()
+        return RpcRequest(requestId, buildMessageEvent(keyPair, signerPubkey, payload, createdAt))
+    }
+
+    /** 对 nostrconnect 阶段收到的 connect 请求回 an acknowledgment，签名器才会继续。 */
+    fun buildConnectAck(
+        keyPair: ClientKeyPair,
+        signerPubkey: String,
+        requestId: String,
+        createdAt: Long = System.currentTimeMillis() / 1000
+    ): JSONObject = buildMessageEvent(
+        keyPair,
+        signerPubkey,
+        JSONObject().put("id", requestId).put("result", "ack"),
+        createdAt
+    )
+
+    /** NIP-46 消息事件：kind 24133、p 标签为 signerPubkey、content 为 NIP-44 加密的 payload。 */
+    private fun buildMessageEvent(
+        keyPair: ClientKeyPair,
+        signerPubkey: String,
+        payload: JSONObject,
+        createdAt: Long
+    ): JSONObject {
+        require(signerPubkey.isHexKey()) { "Invalid remote signer public key" }
         val conversationKey = NostrNip44.conversationKey(
             keyPair.privateKey,
             signerPubkey.hexToByteArray()
         )
-        val content = NostrNip44.encrypt(plaintext, conversationKey)
+        val content = NostrNip44.encrypt(payload.toString(), conversationKey)
         val tags = listOf(listOf("p", signerPubkey))
         val id = eventId(keyPair.publicKey, createdAt, 24133, tags, content)
         val signature = Secp256k1.signSchnorr(id, keyPair.privateKey, null).toHex()
-        val event = JSONObject()
+        return JSONObject()
             .put("id", id.toHex())
             .put("pubkey", keyPair.publicKey)
             .put("created_at", createdAt)
@@ -223,7 +273,6 @@ object NostrNip46 {
             .put("tags", JSONArray().put(JSONArray().put("p").put(signerPubkey)))
             .put("content", content)
             .put("sig", signature)
-        return RpcRequest(requestId, event)
     }
 
     private fun eventId(

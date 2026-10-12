@@ -230,5 +230,25 @@ class NostrReviewClientTest {
         assertTrue(failure.isFailure)
     }
 
+    @Test
+    fun canonicalEventSerializationKeepsForwardSlashes() {
+        val pubkey = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2"
+        val tagPubkey = "0000000000000000000000000000000000000000000000000000000000000001"
+        val tags = listOf(listOf("p", tagPubkey))
+        val content = "a/b+c="
+
+        // 规范串里 "/" 必须原样保留（org.json 会写成 "\/"，那样算出的 id 与中继不一致）。
+        assertEquals(
+            "[0,\"$pubkey\",1672327989,24133,[[\"p\",\"$tagPubkey\"]],\"$content\"]",
+            canonicalEventJson(pubkey, 1672327989, 24133, tags, content)
+        )
+        // 期望值由外部按 NIP-01 规范（保留 "/"）对上述字节算 SHA-256 得到，非本代码自洽产物。
+        assertEquals(
+            "07c301306673fb68f4c95e92d4e648532529d15e5f08647c2c6935577fc3903c",
+            nostrEventId(pubkey, 1672327989, 24133, tags, content)
+                .joinToString("") { "%02x".format(it) }
+        )
+    }
+
     private fun String.hexToBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 }

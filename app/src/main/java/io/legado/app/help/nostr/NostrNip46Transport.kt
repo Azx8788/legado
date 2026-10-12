@@ -79,14 +79,25 @@ object NostrNip46Transport {
                     override fun onMessage(webSocket: WebSocket, text: String) {
                         runCatching {
                             val message = JSONArray(text)
-                            if (message.optString(0) != "OK" || message.optString(1) != eventId) return
-                            if (completed.compareAndSet(false, true)) {
-                                val accepted = message.optBoolean(2)
-                                webSocket.close(1000, "publish acknowledged")
-                                if (accepted) continuation.resume(true)
-                                else continuation.resumeWithException(
-                                    IllegalStateException(message.optString(3, "Relay rejected event"))
+                            when (message.optString(0)) {
+                                "OK" -> {
+                                    if (message.optString(1) != eventId) return
+                                    if (completed.compareAndSet(false, true)) {
+                                        val accepted = message.optBoolean(2)
+                                        webSocket.close(1000, "publish acknowledged")
+                                        if (accepted) continuation.resume(true)
+                                        else continuation.resumeWithException(
+                                            IllegalStateException(
+                                                message.optString(3, "Relay rejected event")
+                                            )
+                                        )
+                                    }
+                                }
+                                "NOTICE", "AUTH" -> AppLog.put(
+                                    "Nostr publish relay ${relayHost(relay)} feedback: ${text.take(300)}",
+                                    tag = "Nostr"
                                 )
+                                else -> Unit
                             }
                         }
                     }
@@ -115,7 +126,7 @@ object NostrNip46Transport {
         keyPair: NostrNip46.ClientKeyPair,
         secret: String,
         timeoutMillis: Long = 120_000
-    ): NostrNip46.NostrConnectApproval = withTimeout(timeoutMillis) {
+    ): NostrNip46.NostrConnectMessage = withTimeout(timeoutMillis) {
         suspendCancellableCoroutine { continuation ->
             val completed = AtomicBoolean(false)
             val failedRelays = AtomicInteger(0)
@@ -166,14 +177,14 @@ object NostrNip46Transport {
                                     message.optString(1) != subscriptionId
                                 ) return
                                 val event = message.optJSONObject(2) ?: return
-                                val approval = NostrNip46.validateNostrConnectApproval(
+                                val connectMessage = NostrNip46.decodeNostrConnectMessage(
                                     eventJson = event,
                                     keyPair = keyPair,
                                     expectedSecret = secret
                                 )
                                 if (completed.compareAndSet(false, true)) {
                                     closeSockets()
-                                    continuation.resume(approval)
+                                    continuation.resume(connectMessage)
                                 }
                             }
                         }
@@ -269,9 +280,10 @@ object NostrNip46Transport {
                     object : WebSocketListener() {
                         override fun onOpen(webSocket: WebSocket, response: Response) {
                             AppLog.put("NIP-46 relay ${relayHost(relay)} connected", tag = "Nostr")
+                            // 只用 #p 过滤（与 Amethyst/quartz 一致）；不限定作者：解密 MAC 本身
+                            // 就能挡住伪造，也兼容用其它密钥回包的非标准 bunker。
                             val filter = JSONObject()
                                 .put("kinds", JSONArray().put(24133))
-                                .put("authors", JSONArray().put(expectedAuthor))
                                 .put("#p", JSONArray().put(keyPair.publicKey))
                             if (!webSocket.send(
                                     JSONArray().put("REQ").put(subscriptionId).put(filter).toString()
@@ -295,17 +307,29 @@ object NostrNip46Transport {
                                     tag = "Nostr"
                                 )
                                 when (message.optString(0)) {
-                                    "AUTH" -> relayErrors[relay] = "auth required (NIP-42)"
+                                    "AUTH" -> failRelay(
+                                        relay,
+                                        IllegalStateException("relay requires NIP-42 auth")
+                                    )
                                     "CLOSED" -> if (message.optString(1) == subscriptionId) {
-                                        relayErrors[relay] =
-                                            "subscription closed: ${message.optString(2)}"
+                                        failRelay(
+                                            relay,
+                                            IllegalStateException(
+                                                "subscription closed: ${message.optString(2)}"
+                                            )
+                                        )
                                     }
                                     "OK" -> if (
                                         message.optString(1) == request.event.optString("id") &&
                                         !message.optBoolean(2)
                                     ) {
-                                        relayErrors[relay] = message.optString(
-                                            3, "relay rejected the NIP-46 request event"
+                                        failRelay(
+                                            relay,
+                                            IllegalStateException(
+                                                message.optString(
+                                                    3, "relay rejected the NIP-46 request event"
+                                                )
+                                            )
                                         )
                                     }
                                 }

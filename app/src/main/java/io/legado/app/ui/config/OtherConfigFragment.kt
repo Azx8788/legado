@@ -606,11 +606,23 @@ class OtherConfigFragment : PreferenceFragment(),
         connectionJob = viewLifecycleOwner.lifecycleScope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
-                    val approval = NostrNip46Transport.awaitNostrConnect(
+                    val message = NostrNip46Transport.awaitNostrConnect(
                         token.relays,
                         keyPair,
                         token.secret
                     )
+                    val approval = message.approval
+                    if (message.isConnectRequest) {
+                        // 部分签名器先发 connect 请求，客户端回 ack 后才会继续。
+                        NostrNip46Transport.publish(
+                            token.relays,
+                            NostrNip46.buildConnectAck(
+                                keyPair = keyPair,
+                                signerPubkey = approval.signerPubkey,
+                                requestId = approval.requestId
+                            )
+                        )
+                    }
                     val connection = NostrNip46.BunkerConnection(
                         signerPubkey = approval.signerPubkey,
                         relays = token.relays,
