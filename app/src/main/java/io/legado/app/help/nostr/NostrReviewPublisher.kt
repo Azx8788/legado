@@ -3,10 +3,46 @@ package io.legado.app.help.nostr
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.Book
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
 object NostrReviewPublisher {
+
+    /**
+     * 应用级发布作用域：不挂在任何界面/宿主的生命周期上，关掉段评弹窗、退回正文都不会取消它，
+     * 只有进程结束时才随之取消。
+     */
+    private val publishScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 与 UI 生命周期无关的发布：关弹窗/退回正文也不中断。
+     * [block] 在 [publishScope] 内执行，成功回调 [onSuccess]；
+     * 失败写一行日志并回调 [onFailure]，不吞异常；取消（进程结束）不当作业务失败。
+     */
+    fun launchPublish(
+        paragraphNum: Int,
+        block: suspend () -> Unit,
+        onSuccess: () -> Unit = {},
+        onFailure: (Throwable) -> Unit = {}
+    ): Job = publishScope.launch {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            // 进程级作用域只在进程结束时取消，此时已无发布/回写意义，直接结束
+            throw e
+        } catch (e: Throwable) {
+            AppLog.put("段评发布失败 p=$paragraphNum：${e.localizedMessage}", e, tag = "Nostr")
+            onFailure(e)
+            return@launch
+        }
+        onSuccess()
+    }
 
     suspend fun postParagraphComment(
         book: Book,
