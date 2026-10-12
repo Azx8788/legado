@@ -268,6 +268,7 @@ object NostrNip46Transport {
                     Request.Builder().url(relay).build(),
                     object : WebSocketListener() {
                         override fun onOpen(webSocket: WebSocket, response: Response) {
+                            AppLog.put("NIP-46 relay ${relayHost(relay)} connected", tag = "Nostr")
                             val filter = JSONObject()
                                 .put("kinds", JSONArray().put(24133))
                                 .put("authors", JSONArray().put(expectedAuthor))
@@ -285,11 +286,33 @@ object NostrNip46Transport {
 
                         override fun onMessage(webSocket: WebSocket, text: String) {
                             if (completed.get()) return
+                            val message = runCatching { JSONArray(text) }.getOrNull() ?: return
+                            // relay 对订阅/发布的即时反馈(OK/NOTICE/AUTH/CLOSED)：以前被丢弃，
+                            // 导致「中继拒绝事件」与「签名器没回应」都表现成「no response」，无法区分。
+                            if (message.optString(0) != "EVENT") {
+                                AppLog.put(
+                                    "NIP-46 relay ${relayHost(relay)} feedback: ${text.take(400)}",
+                                    tag = "Nostr"
+                                )
+                                when (message.optString(0)) {
+                                    "AUTH" -> relayErrors[relay] = "auth required (NIP-42)"
+                                    "CLOSED" -> if (message.optString(1) == subscriptionId) {
+                                        relayErrors[relay] =
+                                            "subscription closed: ${message.optString(2)}"
+                                    }
+                                    "OK" -> if (
+                                        message.optString(1) == request.event.optString("id") &&
+                                        !message.optBoolean(2)
+                                    ) {
+                                        relayErrors[relay] = message.optString(
+                                            3, "relay rejected the NIP-46 request event"
+                                        )
+                                    }
+                                }
+                                return
+                            }
                             runCatching {
-                                val message = JSONArray(text)
-                                if (message.optString(0) != "EVENT" ||
-                                    message.optString(1) != subscriptionId
-                                ) return
+                                if (message.optString(1) != subscriptionId) return
                                 val event = message.optJSONObject(2) ?: return
                                 val result = NostrNip46.decryptResponse(
                                     eventJson = event,
