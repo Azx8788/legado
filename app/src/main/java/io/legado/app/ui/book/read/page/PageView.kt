@@ -445,6 +445,11 @@ class PageView(context: Context) : FrameLayout(context) {
         return binding.contentTextView.createHighlight(style)
     }
 
+    /** 选区起点段落的段评入口信息。 */
+    fun selectedReviewTarget(): ContentTextView.ReviewTarget? {
+        return binding.contentTextView.selectedReviewTarget()
+    }
+
     fun relativePage(relativePagePos: Int): TextPage {
         return binding.contentTextView.relativePage(relativePagePos)
     }
