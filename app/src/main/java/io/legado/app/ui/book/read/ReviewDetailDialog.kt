@@ -1428,6 +1428,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         result.onSuccess {
                             dialog.dismiss()
                             loadDetailPage(paragraphNum, 1, append = false)
+                            // 回复也同样计入图标计数，需刷新本章统计
+                            postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                         }.onFailure {
                             dialog.dismiss()
                             context?.toastOnUi(it.localizedMessage ?: getString(R.string.nostr_comment_failed))
