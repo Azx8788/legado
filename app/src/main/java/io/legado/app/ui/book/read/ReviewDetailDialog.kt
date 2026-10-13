@@ -2,9 +2,6 @@ package io.legado.app.ui.book.read
 
 import android.content.Context
 import android.os.Bundle
-import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -1550,6 +1547,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.ivMedia.gone()
                 binding.tvAudio.gone()
                 binding.tvReply.gone()
+                binding.tvReplyBottom.gone()
+                binding.llFooter.gone()
                 binding.tvContent.visible()
                 binding.tvContent.text = context.getString(R.string.review_more_replies, item.moreCount)
                 binding.tvContent.textSize = 14f
@@ -1574,6 +1573,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             )
 
             binding.llContentCard.background = null
+            binding.llFooter.visible()
 
             val avatarSize = if (item.isReply) 28.dpToPx() else 36.dpToPx()
             binding.ivAvatar.updateLayoutParams<ViewGroup.LayoutParams> {
@@ -1591,36 +1591,16 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             val primaryColor = context.getCompatColor(R.color.primaryText)
             val secondaryColor = context.getCompatColor(R.color.secondaryText)
             val contentColor = context.getCompatColor(R.color.reviewContentText)
-            if (item.isReply) {
-                binding.tvName.gone()
-                val name = item.name.orEmpty().trim()
-                val content = item.content.orEmpty().trim()
-                binding.tvContent.text = when {
-                    name.isEmpty() -> content
-                    content.isEmpty() -> name
-                    else -> SpannableStringBuilder().apply {
-                        append(name)
-                        setSpan(
-                            ForegroundColorSpan(secondaryColor),
-                            0,
-                            name.length,
-                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-                        )
-                        append("  ")
-                        append(content)
-                    }
-                }
-            } else {
-                binding.tvName.text = item.name.orEmpty()
-                binding.tvName.visibility = if (item.name.isNullOrBlank()) View.GONE else View.VISIBLE
-                binding.tvName.setTextColor(primaryColor)
-                binding.tvContent.text = item.content.orEmpty()
-            }
-            if (item.pendingState == null && !item.nostrAuthorPubkey.isNullOrBlank() && NostrSigners.current() != null) {
-                binding.tvReply.visible()
-            } else {
-                binding.tvReply.gone()
-            }
+            binding.tvName.text = item.name.orEmpty()
+            binding.tvName.visibility = if (item.name.isNullOrBlank()) View.GONE else View.VISIBLE
+            binding.tvName.setTextColor(primaryColor)
+            binding.tvContent.text = item.content.orEmpty()
+            val canReply = item.pendingState == null &&
+                    !item.nostrAuthorPubkey.isNullOrBlank() &&
+                    NostrSigners.current() != null
+            // 主评论的回复按钮在昵称行，回复项的移到时间行，避免没有昵称时独占一行
+            binding.tvReply.visibility = if (canReply && !item.isReply) View.VISIBLE else View.GONE
+            binding.tvReplyBottom.visibility = if (canReply && item.isReply) View.VISIBLE else View.GONE
             val hasText = binding.tvContent.text?.isNotBlank() == true
             binding.tvContent.visibility = if (hasText) View.VISIBLE else View.GONE
             binding.tvContent.textSize = if (item.isReply) 14f else 16f
@@ -1694,10 +1674,12 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 val audioUrl = item.audioUrl ?: return@setOnClickListener
                 toggleAudioPlayback(audioUrl)
             }
-            binding.tvReply.setOnClickListener {
+            val onReplyClick = View.OnClickListener {
                 val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
                 if (item.itemType != TYPE_MORE && item.pendingState == null) showNostrReplyEditor(item)
             }
+            binding.tvReply.setOnClickListener(onReplyClick)
+            binding.tvReplyBottom.setOnClickListener(onReplyClick)
             binding.llLikeArea.setOnClickListener {
                 val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
                 if (item.itemType != TYPE_MORE && item.pendingState == null && !item.id.isNullOrBlank() &&
