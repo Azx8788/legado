@@ -2414,7 +2414,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         // 而 setReviewProviders / upContent 会更新排版列并刷新视图，必须在主线程执行，
         // 否则会抛出 CalledFromWrongThreadException(Only the original thread ... can touch its views)。
         runOnUiThread {
-            ChapterProvider.setReviewProviders(
+            val columnsChanged = ChapterProvider.setReviewProviders(
                 countProvider = { targetChapterIndex, reviewId ->
                     when {
                         targetChapterIndex != chapterIndex -> 0
@@ -2427,8 +2427,12 @@ class ReadBookActivity : BaseReadBookActivity(),
                 }
             )
             reviewSummaryAppliedKey = key
-            // 段评列刷新只需要重绘当前阅读视图，避免重新走 curPageChanged() 打断朗读位置。
-            binding.readView.upContent(relativePosition = 0, resetPageOffset = false)
+            // 段评列没有实际变化时不做整页重绘：发布后的两次回查若与乐观结果一致，
+            // 原先每次都会重绘整页，表现为退出段评后隔几秒闪几下。
+            // 有变化时才重绘当前阅读视图，避免重新走 curPageChanged() 打断朗读位置。
+            if (columnsChanged) {
+                binding.readView.upContent(relativePosition = 0, resetPageOffset = false)
+            }
         }
     }
 

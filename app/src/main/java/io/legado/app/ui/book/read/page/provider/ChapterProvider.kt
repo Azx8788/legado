@@ -981,13 +981,17 @@ object ChapterProvider {
         upLayout()
     }
 
+    /**
+     * 设置段评计数/来源 provider 并同步三章段评列，返回段评列是否真的发生了变化。
+     * 调用方据此决定要不要重绘视图，避免 provider 未变时无谓地整页刷新。
+     */
     fun setReviewProviders(
         countProvider: ((Int, Int) -> Int)?,
         keyProvider: ((Int, Int) -> String?)?
-    ) {
+    ): Boolean {
         reviewCountProvider = countProvider
         reviewKeyProvider = keyProvider
-        refreshReviewColumns()
+        return refreshReviewColumns()
     }
 
     fun clearReviewProviders() {
@@ -1056,15 +1060,18 @@ object ChapterProvider {
         return if (paragraphNum - titleOffset == target.second) -1 else 0
     }
 
-    private fun refreshReviewColumns() {
-        refreshReviewColumns(ReadBook.prevTextChapter)
-        refreshReviewColumns(ReadBook.curTextChapter)
-        refreshReviewColumns(ReadBook.nextTextChapter)
+    private fun refreshReviewColumns(): Boolean {
+        // 三章都要过一遍，任一章有列变化即视为需要重绘
+        var anyChanged = refreshReviewColumns(ReadBook.prevTextChapter)
+        anyChanged = refreshReviewColumns(ReadBook.curTextChapter) || anyChanged
+        anyChanged = refreshReviewColumns(ReadBook.nextTextChapter) || anyChanged
+        return anyChanged
     }
 
-    private fun refreshReviewColumns(textChapter: TextChapter?) {
-        textChapter ?: return
+    private fun refreshReviewColumns(textChapter: TextChapter?): Boolean {
+        textChapter ?: return false
         val chapterIndex = textChapter.chapter.index
+        var anyChanged = false
         var pageIndex = 0
         while (pageIndex < textChapter.pageSize) {
             val page = textChapter.getPage(pageIndex) ?: break
@@ -1107,11 +1114,13 @@ object ChapterProvider {
                 }
                 if (changed) {
                     line.invalidate()
+                    anyChanged = true
                 }
                 lineIndex++
             }
             pageIndex++
         }
+        return anyChanged
     }
 
     fun getReviewCount(
