@@ -68,7 +68,7 @@ object NostrNip55Client {
     ): NostrNip55.Result? = withBackgroundQuery {
         appCtx.contentResolver.query(
             Uri.parse("content://$packageName.$command"),
-            listOf(payload, "", userPubkey),
+            arrayOf(payload, "", userPubkey),
             null,
             null,
             null
