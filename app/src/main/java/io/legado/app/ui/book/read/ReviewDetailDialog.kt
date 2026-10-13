@@ -1157,12 +1157,11 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     /**
      * 引擎层 JsSourceReview.ReviewDetailItem 转 UI 层 ReviewDetailItem。
      * badge(单值)映射为 badges 列表;JS 契约无 img/audio/time/likeCount 字段,对应 UI 字段取 null。
-     * 嵌套 replies 平铺为单层:UI 渲染路径(flattenItems)只展示主评论+一层回复,
-     * 平铺后每条回复为叶子,与声明式源产出的一层回复结构一致。
+     * 嵌套 replies 原样保留,由 flattenItems 按层级渲染。
      */
     private fun convertJsReviewItemToUi(item: JsSourceReview.ReviewDetailItem): ReviewDetailItem {
-        val flatReplies = flattenJsReplies(item.replies).map { jsReviewItemToUi(it, emptyList()) }
-        return jsReviewItemToUi(item, flatReplies)
+        val replies = item.replies.map { convertJsReviewItemToUi(it) }
+        return jsReviewItemToUi(item, replies)
     }
 
     /** 本地乐观更新某条评论的点赞态与计数（失败时反向调用以回滚）。 */
@@ -1266,18 +1265,6 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         )
     }
 
-    private fun flattenJsReplies(
-        replies: List<JsSourceReview.ReviewDetailItem>
-    ): List<JsSourceReview.ReviewDetailItem> {
-        if (replies.isEmpty()) return emptyList()
-        val flat = ArrayList<JsSourceReview.ReviewDetailItem>()
-        replies.forEach { reply ->
-            flat.add(reply)
-            flat.addAll(flattenJsReplies(reply.replies))
-        }
-        return flat
-    }
-
     private data class ReviewUiItem(
         val id: String?,
         val avatar: String?,
@@ -1294,6 +1281,10 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val likedByMe: Boolean = false,
         val myReactionId: String? = null,
         val isReply: Boolean,
+        /** 层级：1=主评论，2 起为回复。 */
+        val level: Int = 1,
+        /** 回复对象昵称（仅回复项），用于昵称行「X 回复 Y」。 */
+        val replyToName: String? = null,
         val itemType: Int = TYPE_NORMAL,
         val parentKey: String? = null,
         val moreCount: Int = 0,
@@ -1304,38 +1295,68 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val list = ArrayList<ReviewUiItem>()
         items.forEach { item ->
             val parentKey = buildDetailItemKey(item, isReply = false)
-            list.add(item.toUiItem(isReply = false, parentKey = parentKey))
+            list.add(item.toUiItem(level = 1, parentKey = parentKey))
 
             val loadedReplyCount = item.replies.size
             if (loadedReplyCount <= 0) return@forEach
-            val moreCount = max(item.replyCount ?: 0, loadedReplyCount)
 
-            if (expandedReplyParentKeys.contains(parentKey)) {
-                item.replies.forEach { reply ->
-                    list.add(reply.toUiItem(isReply = true, parentKey = parentKey))
-                }
+            if (!expandedReplyParentKeys.contains(parentKey)) {
+                val moreCount = max(item.replyCount ?: 0, loadedReplyCount)
+                list.add(
+                    ReviewUiItem(
+                        id = null,
+                        avatar = null,
+                        name = null,
+                        badges = emptyList(),
+                        content = null,
+                        imageUrl = null,
+                        audioUrl = null,
+                        time = null,
+                        likeCount = null,
+                        isReply = false,
+                        itemType = TYPE_MORE,
+                        parentKey = parentKey,
+                        moreCount = moreCount
+                    )
+                )
                 return@forEach
             }
 
-            list.add(
-                ReviewUiItem(
-                    id = null,
-                    avatar = null,
-                    name = null,
-                    badges = emptyList(),
-                    content = null,
-                    imageUrl = null,
-                    audioUrl = null,
-                    time = null,
-                    likeCount = null,
-                    isReply = false,
-                    itemType = TYPE_MORE,
-                    parentKey = parentKey,
-                    moreCount = moreCount
-                )
+            appendReplyItems(
+                result = list,
+                replies = item.replies,
+                level = 2,
+                parentKey = parentKey,
+                replyToName = item.name
             )
         }
         return list
+    }
+
+    /**
+     * 递归展开回复（含更深嵌套），最深到 [MAX_REPLY_LEVEL] 级；同级回复统一缩进。
+     * replyToName 为该级回复的对象昵称，随层级向下传递。
+     */
+    private fun appendReplyItems(
+        result: MutableList<ReviewUiItem>,
+        replies: List<ReviewDetailItem>,
+        level: Int,
+        parentKey: String?,
+        replyToName: String?
+    ) {
+        if (level > MAX_REPLY_LEVEL) return
+        replies.forEach { reply ->
+            result.add(reply.toUiItem(level = level, parentKey = parentKey, replyToName = replyToName))
+            if (reply.replies.isNotEmpty()) {
+                appendReplyItems(
+                    result = result,
+                    replies = reply.replies,
+                    level = level + 1,
+                    parentKey = parentKey,
+                    replyToName = reply.name ?: replyToName
+                )
+            }
+        }
     }
 
     private fun renderUiItems() {
@@ -1343,7 +1364,11 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         adapter.setItems(uiItems, uiItemDiffCallback, skipDiff = true)
     }
 
-    private fun ReviewDetailItem.toUiItem(isReply: Boolean, parentKey: String? = null) = ReviewUiItem(
+    private fun ReviewDetailItem.toUiItem(
+        level: Int,
+        parentKey: String? = null,
+        replyToName: String? = null
+    ) = ReviewUiItem(
         id = id,
         avatar = avatar,
         name = name,
@@ -1358,7 +1383,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         likeCount = likeCount,
         likedByMe = likedByMe,
         myReactionId = myReactionId,
-        isReply = isReply,
+        isReply = level > 1,
+        level = level,
+        replyToName = replyToName,
         parentKey = parentKey,
         pendingState = pendingState
     )
@@ -1370,6 +1397,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         const val TYPE_NORMAL = 0
         const val TYPE_MORE = 1
         private const val NOSTR_MORE_PAGE = "nostr-more"
+        /** 段评最多展示的嵌套层级（1=主评论）；第 5 级不再显示回复按钮。 */
+        private const val MAX_REPLY_LEVEL = 5
         private const val REVIEW_DRAFT_TTL_SECONDS = 30 * 24 * 60 * 60
         const val PAYLOAD_AUDIO_STATE = "review_audio_state"
         private const val PENDING_SENDING = "sending"
@@ -1643,6 +1672,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.ivMedia.gone()
                 binding.tvAudio.gone()
                 binding.tvReplyBottom.gone()
+                binding.tvReplyTo.gone()
                 binding.llFooter.gone()
                 binding.tvContent.visible()
                 binding.tvContent.text = context.getString(R.string.review_more_replies, item.moreCount)
@@ -1689,10 +1719,17 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             binding.tvName.text = item.name.orEmpty()
             binding.tvName.visibility = if (item.name.isNullOrBlank()) View.GONE else View.VISIBLE
             binding.tvName.setTextColor(primaryColor)
+            // 回复项在昵称行补充回复对象：X 回复 Y
+            val replyTo = if (item.isReply) item.replyToName?.takeIf { it.isNotBlank() } else null
+            binding.tvReplyTo.visibility = if (replyTo != null) View.VISIBLE else View.GONE
+            binding.tvReplyTo.text = replyTo?.let {
+                context.getString(R.string.nostr_comment_reply_to, it)
+            } ?: ""
             binding.tvContent.text = item.content.orEmpty()
             val canReply = item.pendingState == null &&
                     !item.nostrAuthorPubkey.isNullOrBlank() &&
-                    NostrSigners.current() != null
+                    NostrSigners.current() != null &&
+                    item.level < MAX_REPLY_LEVEL
             // 回复按钮统一放在时间行，主评论与回复项保持一致
             binding.tvReplyBottom.visibility = if (canReply) View.VISIBLE else View.GONE
             val hasText = binding.tvContent.text?.isNotBlank() == true

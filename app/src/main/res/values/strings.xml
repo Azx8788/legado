@@ -1381,6 +1381,7 @@ Placeholders:
     <string name="nostr_relays_last_check">Last checked: %1$s</string>
     <string name="nostr_comment_write">Write Nostr comment</string>
     <string name="nostr_comment_reply">Reply</string>
+    <string name="nostr_comment_reply_to">Reply to %1$s</string>
     <string name="nostr_comment_hint">Write a paragraph comment</string>
     <string name="nostr_comment_publish">Publish</string>
     <string name="nostr_comment_publishing">Publishing…</string>
