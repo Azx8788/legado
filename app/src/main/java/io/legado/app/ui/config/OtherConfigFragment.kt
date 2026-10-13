@@ -360,6 +360,13 @@ class OtherConfigFragment : PreferenceFragment(),
                     postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                     toastOnUi(getString(R.string.nostr_signer_disconnected))
                 }
+                if (NostrSignerStore.loadExternal() != null &&
+                    NostrSignerStore.activeSigner != NostrSignerStore.SIGNER_NIP46
+                ) {
+                    neutralButton(getString(R.string.nostr_signer_switch_to)) {
+                        activateSigner(NostrSignerStore.SIGNER_NIP46)
+                    }
+                }
                 cancelButton()
             }
             return
@@ -474,6 +481,13 @@ class OtherConfigFragment : PreferenceFragment(),
                     postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                     toastOnUi(getString(R.string.nostr_signer_disconnected))
                 }
+                if (NostrSignerStore.load() != null &&
+                    NostrSignerStore.activeSigner != NostrSignerStore.SIGNER_NIP55
+                ) {
+                    neutralButton(getString(R.string.nostr_signer_switch_to)) {
+                        activateSigner(NostrSignerStore.SIGNER_NIP55)
+                    }
+                }
                 cancelButton()
             }
             return
@@ -513,19 +527,36 @@ class OtherConfigFragment : PreferenceFragment(),
         }
     }
 
+    /** 切换当前使用的签名器；两个签名器可同时保留，连接谁就用谁。 */
+    private fun activateSigner(signer: String) {
+        NostrSignerStore.activeSigner = signer
+        updateNostrSignerSummary()
+        postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
+        toastOnUi(getString(R.string.nostr_signer_switched))
+    }
+
     private fun updateNostrSignerSummary() {
         val session = NostrSignerStore.load()
+        val external = NostrSignerStore.loadExternal()
+        val active = NostrSignerStore.activeSigner
         findPreference<Preference>("nostrSigner")?.summary = when {
-            session != null -> session.userPubkey
+            session != null -> signerSummary(
+                session.userPubkey,
+                active == NostrSignerStore.SIGNER_NIP46
+            )
+
             !AppConfig.nostrRestoredBunkerUri.isNullOrBlank() ->
                 getString(R.string.nostr_signer_restored)
 
             else -> getString(R.string.nostr_signer_not_connected)
         }
-        findPreference<Preference>("nostrExternalSigner")?.summary =
-            NostrSignerStore.loadExternal()?.userPubkey
-                ?: getString(R.string.nostr_signer_not_connected)
+        findPreference<Preference>("nostrExternalSigner")?.summary = external?.let {
+            signerSummary(it.userPubkey, active == NostrSignerStore.SIGNER_NIP55)
+        } ?: getString(R.string.nostr_signer_not_connected)
     }
+
+    private fun signerSummary(pubkey: String, inUse: Boolean): String =
+        if (inUse) getString(R.string.nostr_signer_summary_active, pubkey) else pubkey
 
     private fun updateNostrRelaysSummary() {
         val preference = findPreference<Preference>("nostrRelays") ?: return

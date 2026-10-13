@@ -60,14 +60,27 @@ private class Nip55SignerBackend(
     }
 }
 
-/** 当前账号：远程签名器优先，其次本机签名器；两者由 [NostrSignerStore] 保证互斥。 */
+/**
+ * 当前使用的签名器：两个账号可同时保留，以 [NostrSignerStore.activeSigner] 为准（连接谁就用谁）；
+ * 记录的账号缺失时回退到另一个。
+ */
 object NostrSigners {
 
     fun current(): NostrSignerBackend? {
         val session = NostrSignerStore.load()
-        if (session != null) return Nip46SignerBackend(session)
-        val external = NostrSignerStore.loadExternal() ?: return null
-        return Nip55SignerBackend(external)
+        val external = NostrSignerStore.loadExternal()
+        val preferExternal = NostrSignerStore.activeSigner == NostrSignerStore.SIGNER_NIP55
+        val preferred = if (preferExternal) external else session
+        val fallback = if (preferExternal) session else external
+        return when (preferred) {
+            is NostrSignerStore.ExternalAccount -> Nip55SignerBackend(preferred)
+            is NostrSignerStore.Session -> Nip46SignerBackend(preferred)
+            else -> when (fallback) {
+                is NostrSignerStore.ExternalAccount -> Nip55SignerBackend(fallback)
+                is NostrSignerStore.Session -> Nip46SignerBackend(fallback)
+                else -> null
+            }
+        }
     }
 
     fun currentPubkey(): String? = current()?.userPubkey

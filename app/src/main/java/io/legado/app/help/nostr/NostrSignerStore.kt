@@ -19,6 +19,16 @@ object NostrSignerStore {
     private const val keyAlias = "legado.nostr.client-key"
     private const val preferenceKey = "encryptedSession"
     private const val externalKey = "externalSigner"
+    private const val activeSignerKey = "activeSigner"
+
+    /** 当前使用的签名器：[SIGNER_NIP46] / [SIGNER_NIP55]；两个账号可同时保留。 */
+    var activeSigner: String?
+        get() = preferences.getString(activeSignerKey, null)
+        set(value) {
+            val editor = preferences.edit()
+            if (value == null) editor.remove(activeSignerKey) else editor.putString(activeSignerKey, value)
+            editor.apply()
+        }
     private const val transformation = "AES/GCM/NoPadding"
     private val preferences by lazy {
         appCtx.getSharedPreferences("nostr_signer", Context.MODE_PRIVATE)
@@ -64,8 +74,6 @@ object NostrSignerStore {
 
     fun save(session: Session) {
         AppConfig.nostrRestoredBunkerUri = null
-        // 两种签名器互斥：连上远程签名器即丢弃本机签名器账号。
-        clearExternal()
         val json = JSONObject()
             .put("bunkerUri", session.bunkerUri)
             .put("clientPrivateKey", session.clientPrivateKey.toHex())
@@ -79,6 +87,7 @@ object NostrSignerStore {
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
         val encrypted = cipher.iv + cipher.doFinal(json)
         preferences.edit().putString(preferenceKey, Base64.encodeToString(encrypted, Base64.NO_WRAP)).apply()
+        activeSigner = SIGNER_NIP46
     }
 
     fun load(): Session? = runCatching {
@@ -102,7 +111,6 @@ object NostrSignerStore {
     }.getOrNull()
 
     fun saveExternal(account: ExternalAccount) {
-        clear()
         preferences.edit().putString(
             externalKey,
             JSONObject()
@@ -110,6 +118,7 @@ object NostrSignerStore {
                 .put("userPubkey", account.userPubkey)
                 .toString()
         ).apply()
+        activeSigner = SIGNER_NIP55
     }
 
     fun loadExternal(): ExternalAccount? = runCatching {
@@ -123,12 +132,18 @@ object NostrSignerStore {
 
     fun clearExternal() {
         preferences.edit().remove(externalKey).apply()
+        if (activeSigner == SIGNER_NIP55) {
+            activeSigner = if (load() != null) SIGNER_NIP46 else null
+        }
     }
 
     fun clear() {
         preferences.edit().remove(preferenceKey).apply()
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         if (keyStore.containsAlias(keyAlias)) keyStore.deleteEntry(keyAlias)
+        if (activeSigner == SIGNER_NIP46) {
+            activeSigner = if (loadExternal() != null) SIGNER_NIP55 else null
+        }
     }
 
     private fun getOrCreateKey(): SecretKey {
@@ -158,4 +173,7 @@ object NostrSignerStore {
 
     private const val IV_LENGTH = 12
     private const val TAG_LENGTH_BITS = 128
+
+    const val SIGNER_NIP46 = "nip46"
+    const val SIGNER_NIP55 = "nip55"
 }
