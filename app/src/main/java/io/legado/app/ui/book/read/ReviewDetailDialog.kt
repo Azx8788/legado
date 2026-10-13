@@ -566,6 +566,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         } else {
             reviewDraftKey("comment")
         }
+        // 乐观上屏：重发同样先本地 +1，失败再回退（首次失败时已回退过一次）。
+        postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
         NostrReviewPublisher.launchPublish(
             paragraphNum = paragraphNum,
             block = {
@@ -601,10 +603,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             },
             onSuccess = { published ->
                 AppLog.put("段评发布成功 id=$localId", tag = "Nostr")
-                // 清草稿与刷新统计与弹窗无关，弹窗已关也要执行
+                // 清草稿与弹窗无关，弹窗已关也要执行；统计已在点击时乐观 +1，成功后不再重复计入。
                 clearReviewDraft(draftKey)
-                postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
-                // 重发成功同样立刻入缓存/上屏，不必等联网回读。
+                // 重发成功立刻入缓存/上屏，不必等联网回读。
                 val confirmed = confirmPublishedComment(published, args.text)
                 cachePublishedComment(parentId = args.parentId, item = confirmed)
                 runOnUiIfAlive {
@@ -624,6 +625,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 AppLog.put("段评发布失败 id=$localId：${cause.localizedMessage}", cause, tag = "Nostr")
                 // 失败必落草稿态：草稿落盘与弹窗无关，先存；占位转草稿态仅在弹窗存活时做
                 saveReviewDraft(draftKey, args.text)
+                // 失败后把气泡回退到真实值。
+                postEvent(EventBus.REFRESH_REVIEW_SUMMARY_ONLY, paragraphNum.toString())
                 runOnUiIfAlive {
                     setPendingState(localId, PENDING_FAILED)
                     context?.toastOnUi(
@@ -661,6 +664,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 val localId = insertLocalPendingItem(comment, null)
                 localPendingPublish[localId] = PublishArgs(text = comment)
                 dialog.dismiss()
+                // 乐观上屏：点击瞬间就让正文气泡 +1，不必等中继接收事件；失败时再回退。
+                postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
                 NostrReviewPublisher.launchPublish(
                     paragraphNum = paragraphNum,
                     block = {
@@ -684,10 +689,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                     },
                     onSuccess = { published ->
                         AppLog.put("段评发布成功 id=$localId", tag = "Nostr")
-                        // 清草稿与刷新统计与弹窗无关，弹窗已关也要执行；
-                        // 通知阅读页刷新段评统计,让「首评」气泡(-1 占位)变为真实评论数。
+                        // 清草稿与弹窗无关，弹窗已关也要执行；统计已在点击时乐观 +1，成功后不再重复计入。
                         clearReviewDraft(draftKey)
-                        postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
                         // 已确认评论立刻入缓存/上屏：弹窗已关也写缓存，重开该段不必等联网。
                         val confirmed = confirmPublishedComment(published, comment)
                         cachePublishedComment(parentId = null, item = confirmed)
@@ -704,6 +707,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         // 失败必落草稿态：弹窗已关闭也要把草稿存下，下次打开发布框自动回填；
                         // 占位转草稿态仅在弹窗存活时做
                         saveReviewDraft(draftKey, comment)
+                        // 失败后把气泡回退到真实值（点击时已乐观 +1，未落地就不该计）。
+                        postEvent(EventBus.REFRESH_REVIEW_SUMMARY_ONLY, paragraphNum.toString())
                         runOnUiIfAlive {
                             setPendingState(localId, PENDING_FAILED)
                             context?.toastOnUi(
@@ -1825,6 +1830,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         rootAuthor = rootAuthor
                     )
                     dialog.dismiss()
+                    // 乐观上屏：回复也挂在段落下的根摘录，气泡同样 +1。
+                    postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
                     NostrReviewPublisher.launchPublish(
                         paragraphNum = paragraphNum,
                         block = {
@@ -1843,9 +1850,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         },
                         onSuccess = { published ->
                             AppLog.put("段评发布成功 id=$localId", tag = "Nostr")
-                            // 清草稿与刷新统计与弹窗无关，弹窗已关也要执行；回复也同样计入图标计数
+                            // 清草稿与弹窗无关，弹窗已关也要执行；统计已在点击时乐观 +1，成功后不再重复计入。
                             clearReviewDraft(draftKey)
-                            postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
                             // 已确认回复立刻入缓存/上屏（挂在父评论下），重开该段不必等联网。
                             val confirmed = confirmPublishedComment(published, content)
                             cachePublishedComment(parentId = parentId, item = confirmed)
@@ -1861,6 +1867,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             // 失败必落草稿态：弹窗已关闭也要把草稿存下，下次打开发布框自动回填；
                             // 占位转草稿态仅在弹窗存活时做
                             saveReviewDraft(draftKey, content)
+                            // 失败后把气泡回退到真实值。
+                            postEvent(EventBus.REFRESH_REVIEW_SUMMARY_ONLY, paragraphNum.toString())
                             runOnUiIfAlive {
                                 setPendingState(localId, PENDING_FAILED)
                                 context?.toastOnUi(

@@ -2258,8 +2258,9 @@ class ReadBookActivity : BaseReadBookActivity(),
     /**
      * 发表/回复 Nostr 段评后由段评弹窗通知:作废当前章的 Nostr 统计缓存并重新拉取，
      * 使「首评」(-1 占位)气泡更新为真实评论数，多出的评论也能立刻反映到正文图标上。
+     * event 非空时为“只重新拉取”（发布失败后的回退），不做乐观 +1。
      */
-    private fun refreshReviewSummaryAfterPublish(paragraphNum: Int = 0) {
+    private fun refreshReviewSummaryAfterPublish(paragraphNum: Int = 0, event: String? = null) {
         if (!AppConfig.nostrReviewEnabled) return
         val book = ReadBook.book ?: return
         val chapterIndex = ReadBook.durChapterIndex
@@ -2273,22 +2274,25 @@ class ReadBookActivity : BaseReadBookActivity(),
             nostrReviewSummaryLoadingKeys.remove(key)
         }
         // 乐观：本段计数先本地 +1 并立即上屏，图标/气泡马上出现；随后再联网校正。
-        val floorCount: Int? = if (paragraphNum > 0) {
+        // event 非空表示「发布失败后的回退」：不做乐观 +1，并清掉该段登记的下限，
+        // 否则 floor 会把远端真实值重新顶回 +1，回退不生效。
+        val bumpParagraphNum = if (event == null) paragraphNum else 0
+        if (event != null && paragraphNum > 0) {
+            synchronized(nostrReviewCountFloor) {
+                nostrReviewCountFloor[key]?.remove(paragraphNum)
+            }
+        }
+        val floorCount: Int? = if (bumpParagraphNum > 0) {
             // paragraphNum 实为 reviewId，与 counts 同键空间；-1 占位（无段评）按 0 起算。
-            val base = (previous?.counts?.get(paragraphNum)
-                ?: ChapterProvider.getReviewCountByReviewId(paragraphNum)).coerceAtLeast(0)
+            val base = (previous?.counts?.get(bumpParagraphNum)
+                ?: ChapterProvider.getReviewCountByReviewId(bumpParagraphNum)).coerceAtLeast(0)
             val bumpedCount = base + 1
             val bumped = (previous ?: ReviewSummaryResult(emptyMap(), emptyMap())).copy(
-                counts = (previous?.counts ?: emptyMap()) + (paragraphNum to bumpedCount)
+                counts = (previous?.counts ?: emptyMap()) + (bumpParagraphNum to bumpedCount)
             )
             synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = bumped }
-            AppLog.put(
-                "诊断1 乐观 reviewId=$paragraphNum base=$base bumped=$bumpedCount " +
-                    "prevHits=${previous?.counts?.filterKeys { kotlin.math.abs(it - paragraphNum) <= 2 }}",
-                tag = "诊断"
-            )
             // 登记本地下限：两次递进回查若仍拿到旧值，上屏时取 max(远端, 下限)，避免 +1 被冲掉。
-            putNostrReviewCountFloor(key, paragraphNum, bumpedCount)
+            putNostrReviewCountFloor(key, bumpParagraphNum, bumpedCount)
             // 第三个参数是「书源计数」位置：必须传书源缓存；传 nostr 摘要会与 nostr 计数重复相加。
             applyReviewSummary(
                 key,
@@ -2324,7 +2328,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         // 第二次回查之后完全以远端为准（允许真实减少）。
         floorCount?.let { registeredCount ->
             handler.postDelayed({
-                clearNostrReviewCountFloor(key, paragraphNum, registeredCount)
+                clearNostrReviewCountFloor(key, bumpParagraphNum, registeredCount)
             }, REVIEW_SUMMARY_FLOOR_TTL_MS)
         }
     }
@@ -2426,7 +2430,6 @@ class ReadBookActivity : BaseReadBookActivity(),
         // 而 setReviewProviders / upContent 会更新排版列并刷新视图，必须在主线程执行，
         // 否则会抛出 CalledFromWrongThreadException(Only the original thread ... can touch its views)。
         runOnUiThread {
-            AppLog.put("诊断2 上屏计数=${counts.filterValues { it > 0 }}", tag = "诊断")
             val columnsChanged = ChapterProvider.setReviewProviders(
                 countProvider = { targetChapterIndex, reviewId ->
                     when {
@@ -2990,6 +2993,9 @@ class ReadBookActivity : BaseReadBookActivity(),
         observeEvent<Int>(EventBus.BATTERY_CHANGED) { readView.upBattery(it) }
         observeEvent<String>(EventBus.REFRESH_REVIEW_SUMMARY) {
             refreshReviewSummaryAfterPublish(it.toIntOrNull() ?: 0)
+        }
+        observeEvent<String>(EventBus.REFRESH_REVIEW_SUMMARY_ONLY) {
+            refreshReviewSummaryAfterPublish(it.toIntOrNull() ?: 0, event = it)
         }
         observeEvent<Boolean>(EventBus.MEDIA_BUTTON) {
             if (it) {

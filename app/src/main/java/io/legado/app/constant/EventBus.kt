@@ -39,6 +39,8 @@ object EventBus {
     const val READ_ALOUD_PLAY = "readAloudPlay"
     const val EXPORT_BOOK = "exportBook"
     const val REFRESH_REVIEW_SUMMARY = "refreshReviewSummary"
+    /** 重新拉取段评统计但不做乐观 +1：供发布失败后回退气泡到真实值。 */
+    const val REFRESH_REVIEW_SUMMARY_ONLY = "refreshReviewSummaryOnly"
     const val UP_MANGA_CONFIG = "upMangaConfig"
     const val PLAY_MODE_CHANGED = "playModeChanged"
     const val REFRESH_BOOK_INFO = "refreshBookInfo"
