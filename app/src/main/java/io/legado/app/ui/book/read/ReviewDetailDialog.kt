@@ -1714,7 +1714,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
 
             binding.tvTime.text = item.time.orEmpty()
             binding.tvTime.visibility = if (item.time.isNullOrBlank()) View.GONE else View.VISIBLE
-            if (!item.isReply && item.pendingState == null) {
+            if (item.pendingState == null) {
                 binding.ivLike.visible()
                 binding.llLikeArea.visible()
                 // 已赞（含本地乐观态）用强调色
