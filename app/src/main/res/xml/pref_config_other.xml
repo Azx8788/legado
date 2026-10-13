@@ -76,6 +76,11 @@
         <io.legado.app.lib.prefs.Preference
             android:key="nostrConnectQr"
             android:title="@string/nostr_signer_pair_qr" />
+
+        <io.legado.app.lib.prefs.Preference
+            android:key="nostrExternalSigner"
+            android:summary="@string/nostr_signer_not_connected"
+            android:title="@string/nostr_external_signer" />
     </io.legado.app.lib.prefs.PreferenceCategory>
 
     <io.legado.app.lib.prefs.PreferenceCategory

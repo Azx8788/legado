@@ -48,7 +48,7 @@ import io.legado.app.help.nostr.NostrProfileStore
 import io.legado.app.help.nostr.NostrReviewClient
 import io.legado.app.help.nostr.NostrReviewDetailCache
 import io.legado.app.help.nostr.NostrReviewPublisher
-import io.legado.app.help.nostr.NostrSignerStore
+import io.legado.app.help.nostr.NostrSigners
 import io.legado.app.help.nostr.ReviewDetailItem
 import io.legado.app.model.ReadBook
 import io.legado.app.model.analyzeRule.AnalyzeRule
@@ -244,7 +244,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     }
 
     private fun addNostrCommentAction() {
-        if (!AppConfig.nostrReviewEnabled || NostrSignerStore.load() == null) return
+        if (!AppConfig.nostrReviewEnabled || NostrSigners.current() == null) return
         binding.toolBar.findViewWithTag<View>("nostr_comment_action")?.let(binding.toolBar::removeView)
         binding.toolBar.findViewWithTag<View>("review_count_tag")?.let {
             (it.layoutParams as? androidx.appcompat.widget.Toolbar.LayoutParams)?.marginEnd = 48.dpToPx()
@@ -304,7 +304,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
      * 返回占位 id，发布成功后据此移除、失败后据此转草稿态。
      */
     private fun insertLocalPendingItem(text: String, replyTo: ReviewDetailItem?): String {
-        val pubkey = NostrSignerStore.load()?.userPubkey?.takeIf { it.isNotBlank() }
+        val pubkey = NostrSigners.currentPubkey()?.takeIf { it.isNotBlank() }
         val profile = pubkey?.let { NostrProfileStore.get(it) }
         val localId = "local:" + UUID.randomUUID()
         val pending = ReviewDetailItem(
@@ -1616,7 +1616,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.tvName.setTextColor(primaryColor)
                 binding.tvContent.text = item.content.orEmpty()
             }
-            if (item.pendingState == null && !item.nostrAuthorPubkey.isNullOrBlank() && NostrSignerStore.load() != null) {
+            if (item.pendingState == null && !item.nostrAuthorPubkey.isNullOrBlank() && NostrSigners.current() != null) {
                 binding.tvReply.visible()
             } else {
                 binding.tvReply.gone()
@@ -1701,7 +1701,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             binding.llLikeArea.setOnClickListener {
                 val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
                 if (item.itemType != TYPE_MORE && item.pendingState == null && !item.id.isNullOrBlank() &&
-                    !item.nostrAuthorPubkey.isNullOrBlank() && NostrSignerStore.load() != null
+                    !item.nostrAuthorPubkey.isNullOrBlank() && NostrSigners.current() != null
                 ) {
                     if (item.likedByMe) {
                         // 取消点赞：先本地回退，再删掉自己那条 reaction，失败则恢复

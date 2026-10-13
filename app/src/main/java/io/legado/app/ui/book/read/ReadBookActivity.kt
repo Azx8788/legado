@@ -65,7 +65,7 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.motion.MotionTokens
 import io.legado.app.help.nostr.NostrReviewClient
 import io.legado.app.help.nostr.NostrReviewDetailCache
-import io.legado.app.help.nostr.NostrSignerStore
+import io.legado.app.help.nostr.NostrSigners
 import io.legado.app.constant.AppPattern
 import io.legado.app.help.source.getSourceType
 import io.legado.app.help.storage.Backup
@@ -2101,7 +2101,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 book,
                 chapter.title,
                 paragraphs,
-                allowCreatingComments = NostrSignerStore.load() != null
+                allowCreatingComments = NostrSigners.current() != null
             )
         }.onSuccess(Main) { summary ->
             synchronized(nostrReviewSummaryLoadingKeys) {
@@ -2161,7 +2161,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                 book,
                 textChapter.chapter.title,
                 paragraphs,
-                allowCreatingComments = NostrSignerStore.load() != null
+                allowCreatingComments = NostrSigners.current() != null
             )
         }.onSuccess(Main) { summary ->
             synchronized(reviewSummaryPrefetchingKeys) {

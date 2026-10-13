@@ -11,6 +11,7 @@ import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.postDelayed
 import androidx.fragment.app.activityViewModels
@@ -29,6 +30,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.nostr.NostrNip46
 import io.legado.app.help.nostr.NostrNip46Transport
+import io.legado.app.help.nostr.NostrNip55
 import io.legado.app.help.nostr.NostrRelays
 import io.legado.app.help.nostr.NostrSignerStore
 import io.legado.app.utils.QRCodeUtils
@@ -80,6 +82,12 @@ class OtherConfigFragment : PreferenceFragment(),
             AppConfig.defaultBookTreeUri = treeUri.toString()
         }
     }
+
+    /** NIP-55：本机签名器用 get_public_key 回包（公钥 + 包名）完成连接。 */
+    private val nostrExternalSignerConnect =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            handleExternalSignerResult(result.resultCode, result.data)
+        }
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         putPrefBoolean(PreferKey.processText, isProcessTextEnabled())
@@ -176,6 +184,7 @@ class OtherConfigFragment : PreferenceFragment(),
             }
 
             "nostrSigner" -> manageNostrSigner()
+            "nostrExternalSigner" -> manageExternalSigner()
             "nostrRelays" -> showNostrRelaysDialog()
             "nostrRelayDiscover" -> discoverNostrRelays()
             "nostrConnectQr" -> startNostrConnect()
@@ -452,16 +461,70 @@ class OtherConfigFragment : PreferenceFragment(),
         }
     }
 
+    /** NIP-55：连接/断开本机签名器 App，与远程签名器互斥。 */
+    private fun manageExternalSigner() {
+        val account = NostrSignerStore.loadExternal()
+        if (account != null) {
+            alert(getString(R.string.nostr_external_signer)) {
+                setMessage(account.userPubkey)
+                positiveButton(getString(R.string.nostr_signer_disconnect)) {
+                    NostrSignerStore.clearExternal()
+                    updateNostrSignerSummary()
+                    // 断开后清掉可能残留的「可首评」占位标记。
+                    postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
+                    toastOnUi(getString(R.string.nostr_signer_disconnected))
+                }
+                cancelButton()
+            }
+            return
+        }
+        if (!NostrNip55.isSignerInstalled(appCtx)) {
+            toastOnUi(getString(R.string.nostr_external_signer_not_installed))
+            return
+        }
+        nostrExternalSignerConnect.launch(NostrNip55.buildGetPublicKeyIntent())
+    }
+
+    private fun handleExternalSignerResult(resultCode: Int, data: Intent?) {
+        when (val outcome = NostrNip55.outcomeOf(resultCode, data)) {
+            is NostrNip55.Outcome.Success -> {
+                val userPubkey = NostrNip55.publicKeyFrom(outcome.result)
+                val packageName = NostrNip55.signerPackageFrom(outcome.result)
+                if (userPubkey == null || packageName.isNullOrBlank()) {
+                    toastOnUi(getString(R.string.nostr_external_signer_failed))
+                    return
+                }
+                NostrSignerStore.saveExternal(
+                    NostrSignerStore.ExternalAccount(packageName, userPubkey)
+                )
+                updateNostrSignerSummary()
+                // 登录成功后让阅读页重新统计段评，以便给无评论的段落显示可首评图标。
+                postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
+                toastOnUi(getString(R.string.nostr_signer_connected))
+            }
+
+            is NostrNip55.Outcome.Failed -> {
+                AppLog.put("Nostr external signer failed: ${outcome.reason}", tag = "Nostr")
+                toastOnUi(outcome.reason)
+            }
+
+            NostrNip55.Outcome.Rejected ->
+                toastOnUi(getString(R.string.nostr_external_signer_rejected))
+        }
+    }
+
     private fun updateNostrSignerSummary() {
-        val preference = findPreference<Preference>("nostrSigner") ?: return
         val session = NostrSignerStore.load()
-        preference.summary = when {
+        findPreference<Preference>("nostrSigner")?.summary = when {
             session != null -> session.userPubkey
             !AppConfig.nostrRestoredBunkerUri.isNullOrBlank() ->
                 getString(R.string.nostr_signer_restored)
 
             else -> getString(R.string.nostr_signer_not_connected)
         }
+        findPreference<Preference>("nostrExternalSigner")?.summary =
+            NostrSignerStore.loadExternal()?.userPubkey
+                ?: getString(R.string.nostr_signer_not_connected)
     }
 
     private fun updateNostrRelaysSummary() {

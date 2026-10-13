@@ -185,7 +185,7 @@ object NostrReviewClient {
         val likeCounts = reactions.filter { it.content == "+" }
             .groupBy { it.tagValues("e").firstOrNull().orEmpty() }
             .mapValues { (_, events) -> events.distinctBy { it.pubkey }.size }
-        val myPubkey = NostrSignerStore.load()?.userPubkey
+        val myPubkey = NostrSigners.currentPubkey()
         val likedIds: Set<String> = if (myPubkey.isNullOrBlank()) {
             emptySet()
         } else {

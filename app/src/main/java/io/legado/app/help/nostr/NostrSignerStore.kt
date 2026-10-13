@@ -18,6 +18,7 @@ object NostrSignerStore {
 
     private const val keyAlias = "legado.nostr.client-key"
     private const val preferenceKey = "encryptedSession"
+    private const val externalKey = "externalSigner"
     private const val transformation = "AES/GCM/NoPadding"
     private val preferences by lazy {
         appCtx.getSharedPreferences("nostr_signer", Context.MODE_PRIVATE)
@@ -43,6 +44,15 @@ object NostrSignerStore {
         val relays: List<String>
     )
 
+    /**
+     * NIP-55 本机签名器账号：只有签名器包名与用户公钥，没有会话密钥，也没有中继。
+     * 签名经由 Intent/ContentResolver 交给该 App，不经过中继。
+     */
+    data class ExternalAccount(
+        val packageName: String,
+        val userPubkey: String
+    )
+
     fun exportAccount(): Account? = load()?.let {
         Account(
             bunkerUri = it.bunkerUri,
@@ -54,6 +64,8 @@ object NostrSignerStore {
 
     fun save(session: Session) {
         AppConfig.nostrRestoredBunkerUri = null
+        // 两种签名器互斥：连上远程签名器即丢弃本机签名器账号。
+        clearExternal()
         val json = JSONObject()
             .put("bunkerUri", session.bunkerUri)
             .put("clientPrivateKey", session.clientPrivateKey.toHex())
@@ -88,6 +100,30 @@ object NostrSignerStore {
             relays = (0 until relays.length()).map { relays.getString(it) }
         )
     }.getOrNull()
+
+    fun saveExternal(account: ExternalAccount) {
+        clear()
+        preferences.edit().putString(
+            externalKey,
+            JSONObject()
+                .put("packageName", account.packageName)
+                .put("userPubkey", account.userPubkey)
+                .toString()
+        ).apply()
+    }
+
+    fun loadExternal(): ExternalAccount? = runCatching {
+        val encoded = preferences.getString(externalKey, null) ?: return null
+        val json = JSONObject(encoded)
+        val packageName = json.optString("packageName")
+        val userPubkey = json.optString("userPubkey")
+        if (packageName.isBlank() || userPubkey.isBlank()) return null
+        ExternalAccount(packageName, userPubkey)
+    }.getOrNull()
+
+    fun clearExternal() {
+        preferences.edit().remove(externalKey).apply()
+    }
 
     fun clear() {
         preferences.edit().remove(preferenceKey).apply()

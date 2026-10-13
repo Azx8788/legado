@@ -57,9 +57,8 @@ object NostrReviewPublisher {
             ?.let(NostrReviewClient::normalizeContent)
             ?.takeIf { it.isNotEmpty() }
             ?: throw IllegalArgumentException("Paragraph is unavailable")
-        val session = NostrSignerStore.load()
-            ?: throw IllegalStateException("Connect a Nostr remote signer before posting")
-        val keyPair = NostrNip46.ClientKeyPair(session.clientPrivateKey, session.clientPublicKey)
+        val signer = NostrSigners.current()
+            ?: throw IllegalStateException("Connect a Nostr signer before posting")
         val createdAt = System.currentTimeMillis() / 1000
         val bookIdentifier = NostrReviewClient.bookIdentifierV2(book.name, book.author)
         val title = NostrReviewClient.normalizeForIdentity(chapterTitle)
@@ -82,18 +81,18 @@ object NostrReviewPublisher {
                 .put("content", paragraph)
                 .put("created_at", createdAt)
                 .put("tags", excerptTags(bookIdentifier, context, paragraph))
-            val published = signAndPublish(session, keyPair, excerpt)
+            val published = signAndPublish(signer, excerpt)
             excerptId = published.event.getString("id")
             excerptRelay = published.acceptedRelays.firstOrNull()
             AppLog.put("段评摘录新建 id=$excerptId relay=${excerptRelay ?: "-"}", tag = "Nostr")
-            ensureExcerptPersisted(session, published.event, listOfNotNull(excerptRelay))
+            ensureExcerptPersisted(signer, published.event, listOfNotNull(excerptRelay))
         }
         val commentEvent = JSONObject()
             .put("kind", 1111)
             .put("content", text)
             .put("created_at", createdAt + 1)
-            .put("tags", commentTags(bookIdentifier, excerptId, session.userPubkey, excerptRelay))
-        signAndPublish(session, keyPair, commentEvent, listOfNotNull(excerptRelay))
+            .put("tags", commentTags(bookIdentifier, excerptId, signer.userPubkey, excerptRelay))
+        signAndPublish(signer, commentEvent, listOfNotNull(excerptRelay))
     }
 
     /**
@@ -101,13 +100,13 @@ object NostrReviewPublisher {
      * 第二次仍取不回即抛异常放弃发布评论，避免产出指向丢失摘录的 1111 悬空引用。
      */
     private suspend fun ensureExcerptPersisted(
-        session: NostrSignerStore.Session,
+        signer: NostrSignerBackend,
         signedExcerpt: JSONObject,
         extraRelays: List<String>
     ) {
         val id = signedExcerpt.getString("id")
         if (excerptReadable(id)) return
-        NostrNip46Transport.publish(publishTargets(session, extraRelays), signedExcerpt)
+        NostrNip46Transport.publish(publishTargets(signer, extraRelays), signedExcerpt)
         if (!excerptReadable(id)) {
             throw IllegalStateException("段评摘录未能持久化，已放弃发布评论")
         }
@@ -129,14 +128,13 @@ object NostrReviewPublisher {
     ) {
         val text = content.trim()
         require(text.isNotEmpty()) { "Comment cannot be empty" }
-        val session = NostrSignerStore.load()
-            ?: throw IllegalStateException("Connect a Nostr remote signer before replying")
+        val signer = NostrSigners.current()
+            ?: throw IllegalStateException("Connect a Nostr signer before replying")
         val createdAt = System.currentTimeMillis() / 1000
         // 被引用的摘录/父评论所在中继：既作为 relay hint 写入标签，也额外投递过去。
         val referencedRelays = NostrReviewClient.findEventRelays(listOf(rootExcerptId, parentCommentId))
         signAndPublish(
-            session,
-            NostrNip46.ClientKeyPair(session.clientPrivateKey, session.clientPublicKey),
+            signer,
             JSONObject()
                 .put("kind", 1111)
                 .put("content", text)
@@ -158,12 +156,11 @@ object NostrReviewPublisher {
     }
 
     suspend fun reactToComment(commentId: String, authorPubkey: String): String {
-        val session = NostrSignerStore.load()
-            ?: throw IllegalStateException("Connect a Nostr remote signer before reacting")
+        val signer = NostrSigners.current()
+            ?: throw IllegalStateException("Connect a Nostr signer before reacting")
         val commentRelay = NostrReviewClient.findEventRelays(listOf(commentId))[commentId]
         val published = signAndPublish(
-            session,
-            NostrNip46.ClientKeyPair(session.clientPrivateKey, session.clientPublicKey),
+            signer,
             JSONObject()
                 .put("kind", 7)
                 .put("content", "+")
@@ -179,11 +176,10 @@ object NostrReviewPublisher {
     /** 取消点赞：按 NIP-09 发 kind 5 删除自己那条 reaction。 */
     suspend fun deleteReaction(reactionEventId: String) {
         require(reactionEventId.isNotBlank()) { "Reaction event id is required" }
-        val session = NostrSignerStore.load()
-            ?: throw IllegalStateException("Connect a Nostr remote signer before reacting")
+        val signer = NostrSigners.current()
+            ?: throw IllegalStateException("Connect a Nostr signer before reacting")
         signAndPublish(
-            session,
-            NostrNip46.ClientKeyPair(session.clientPrivateKey, session.clientPublicKey),
+            signer,
             JSONObject()
                 .put("kind", 5)
                 .put("content", "")
@@ -266,28 +262,16 @@ object NostrReviewPublisher {
      * 去重且顺序稳定。
      */
     private fun publishTargets(
-        session: NostrSignerStore.Session,
+        signer: NostrSignerBackend,
         extraRelays: List<String>
-    ): List<String> = (session.relays + NostrRelays.forReading() + extraRelays).distinct()
+    ): List<String> = (signer.signerRelays + NostrRelays.forReading() + extraRelays).distinct()
 
     private suspend fun signAndPublish(
-        session: NostrSignerStore.Session,
-        keyPair: NostrNip46.ClientKeyPair,
+        signer: NostrSignerBackend,
         unsignedEvent: JSONObject,
         extraRelays: List<String> = emptyList()
     ): Published {
-        val connection = NostrNip46.BunkerConnection(
-            signerPubkey = session.signerPubkey,
-            relays = session.relays,
-            secret = null
-        )
-        val response = NostrNip46Transport.request(
-            connection,
-            keyPair,
-            NostrNip46.buildSignEventRequest(keyPair, session.signerPubkey, unsignedEvent)
-        )
-        if (response.error != null) throw IllegalStateException(response.error)
-        val signed = JSONObject(response.result ?: error("Signer returned an empty signed event"))
+        val signed = signer.sign(unsignedEvent)
         val signedTags = signed.optJSONArray("tags") ?: JSONArray()
         val parsedTags = (0 until signedTags.length()).map { index ->
             val tag = signedTags.getJSONArray(index)
@@ -295,7 +279,7 @@ object NostrReviewPublisher {
         }
         val kind = unsignedEvent.getInt("kind")
         require(signed.optInt("kind", -1) == kind) { "Signer changed the requested event kind" }
-        require(signed.optString("pubkey") == session.userPubkey) { "Signer returned an unexpected public key" }
+        require(signed.optString("pubkey") == signer.userPubkey) { "Signer returned an unexpected public key" }
         require(signed.optString("content") == unsignedEvent.getString("content")) {
             "Signer changed the requested event content"
         }
@@ -313,7 +297,7 @@ object NostrReviewPublisher {
                 signature = signed.getString("sig")
             )
         ) { "Signer returned an invalid Nostr signature" }
-        val outcome = NostrNip46Transport.publishAndCollect(publishTargets(session, extraRelays), signed)
+        val outcome = NostrNip46Transport.publishAndCollect(publishTargets(signer, extraRelays), signed)
         logPublishOutcome(kind, signed.getString("id"), outcome)
         return Published(signed, outcome.acceptedRelays)
     }

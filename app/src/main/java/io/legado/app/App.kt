@@ -17,7 +17,7 @@ import com.script.rhino.RhinoScriptEngine
 import com.script.rhino.RhinoWrapFactory
 import io.legado.app.base.AppContextWrapper
 import io.legado.app.help.nostr.NostrProfileStore
-import io.legado.app.help.nostr.NostrSignerStore
+import io.legado.app.help.nostr.NostrSigners
 import io.legado.app.constant.AppConst.channelIdDownload
 import io.legado.app.constant.AppConst.channelIdReadAloud
 import io.legado.app.constant.AppConst.channelIdWeb
@@ -158,8 +158,8 @@ class App : Application() {
         initRhino()
         //已登录 Nostr：启动后独立协程同步本账号资料（头像/昵称），不受下面启动流程是否出错影响
         Coroutine.async {
-            NostrSignerStore.load()?.let { session ->
-                NostrProfileStore.sync(listOf(session.userPubkey))
+            NostrSigners.currentPubkey()?.let { pubkey ->
+                NostrProfileStore.sync(listOf(pubkey))
             }
         }.onError {
             AppLog.put("同步 Nostr 账号资料失败\n${it.localizedMessage}", it)

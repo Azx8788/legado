@@ -1345,6 +1345,10 @@ Placeholders:
     <string name="nostr_signer_invalid_uri">Invalid bunker URI</string>
     <string name="nostr_signer_failed">Unable to connect to Nostr signer</string>
     <string name="nostr_signer_pair_qr">Pair with signer QR code</string>
+    <string name="nostr_external_signer">Signer app (NIP-55)</string>
+    <string name="nostr_external_signer_not_installed">No NIP-55 signer app is installed</string>
+    <string name="nostr_external_signer_rejected">The signer request was rejected</string>
+    <string name="nostr_external_signer_failed">Unable to read the signer account</string>
     <string name="nostr_signer_scan_qr">Scan this code with your remote signer</string>
     <string name="nostr_signer_qr_copy_hint">Scan this code with your remote signer, or tap the code to copy the pairing link</string>
     <string name="nostr_relays">Nostr relays</string>
