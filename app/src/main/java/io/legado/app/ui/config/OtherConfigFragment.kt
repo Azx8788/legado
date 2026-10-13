@@ -9,8 +9,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
-import android.view.ViewGroup
-import android.widget.ImageView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.postDelayed
@@ -366,10 +364,6 @@ class OtherConfigFragment : PreferenceFragment(),
         val secondaryColor = requireContext().getCompatColor(R.color.secondaryText)
         binding.tvQrSummary.setTextColor(secondaryColor)
         binding.tvLocalSummary.setTextColor(secondaryColor)
-        binding.tvQrSummary.setText(
-            if (NostrSignerStore.load() != null) R.string.nostr_signer_qr_connected
-            else R.string.nostr_signer_qr_summary
-        )
         val external = NostrSignerStore.loadExternal()
         binding.tvLocalSummary.text = when {
             external == null && !NostrNip55.isSignerInstalled(appCtx) ->
@@ -385,11 +379,6 @@ class OtherConfigFragment : PreferenceFragment(),
             NostrSignerStore.load()?.bunkerUri ?: AppConfig.nostrRestoredBunkerUri.orEmpty()
         )
 
-        binding.rowQr.setOnClickListener {
-            // 二维码弹窗自行显示与等待扫码，先关掉本弹窗避免叠层。
-            closeNostrSignerDialog()
-            startNostrConnect()
-        }
         binding.rowLocal.setOnClickListener {
             if (external == null) {
                 connectLocalSigner()
@@ -407,9 +396,13 @@ class OtherConfigFragment : PreferenceFragment(),
             connectNostrSigner(bunkerUri) { closeNostrSignerDialog() }
         }
 
+        var connectJob: Job? = null
         nostrSignerDialog = alert(getString(R.string.nostr_signer)) {
             customView { binding.root }
+            // 关窗即停止等待签名器回连，避免后台残留一个 120s 的订阅。
+            onDismiss { connectJob?.takeIf { it.isActive }?.cancel() }
         }
+        connectJob = showConnectQr(binding)
     }
 
     private fun closeNostrSignerDialog() {
@@ -723,43 +716,36 @@ class OtherConfigFragment : PreferenceFragment(),
         }
     }
 
-    private fun startNostrConnect() {
-        if (NostrSignerStore.load() != null) {
-            toastOnUi(getString(R.string.nostr_signer_connected))
-            return
-        }
-        val keyPair = NostrNip46.newClientKeyPair()
+    /**
+     * 在弹窗内直接展示配对二维码并等待签名器回连（不再另弹二维码窗口）。
+     * 返回等待中的 Job，由弹窗的 onDismiss 取消。
+     */
+    private fun showConnectQr(binding: DialogNostrSignerBinding): Job? {
         // 配对二维码里的中继必须由用户配置或自动发现：签名器只会向这些中继回传结果。
         val relays = NostrRelays.effective()
         if (relays.isEmpty()) {
-            toastOnUi(getString(R.string.nostr_relays_missing))
-            return
+            binding.tvQrSummary.setText(R.string.nostr_relays_missing)
+            binding.ivQr.visibility = View.GONE
+            return null
         }
+        val keyPair = NostrNip46.newClientKeyPair()
         val token = NostrNip46.createNostrConnectToken(keyPair, relays)
         val bitmap = QRCodeUtils.createQRCode(token.uri, 720)
         if (bitmap == null) {
-            toastOnUi(getString(R.string.nostr_signer_failed))
-            return
+            binding.tvQrSummary.setText(R.string.nostr_signer_failed)
+            binding.ivQr.visibility = View.GONE
+            return null
         }
-        val image = ImageView(requireContext()).apply {
-            setImageBitmap(bitmap)
-            adjustViewBounds = true
-            contentDescription = getString(R.string.nostr_signer_scan_qr)
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-            // 部分签名器无法生成二维码时，用户可以手动粘贴配对链接。
-            setOnClickListener { requireContext().sendToClip(token.uri) }
-        }
-        var connectionJob: Job? = null
-        val dialog = alert(getString(R.string.nostr_signer_pair_qr)) {
-            setMessage(getString(R.string.nostr_signer_qr_copy_hint))
-            setCancelable(false)
-            customView { image }
-            cancelButton { connectionJob?.cancel() }
-        }
-        connectionJob = viewLifecycleOwner.lifecycleScope.launch {
+        binding.tvQrSummary.setText(
+            if (NostrSignerStore.load() != null) R.string.nostr_signer_qr_connected
+            else R.string.nostr_signer_qr_summary
+        )
+        binding.ivQr.visibility = View.VISIBLE
+        binding.ivQr.setImageBitmap(bitmap)
+        // 部分签名器无法扫码时，用户可以点击二维码复制配对链接手动粘贴。
+        binding.ivQr.setOnClickListener { requireContext().sendToClip(token.uri) }
+
+        return viewLifecycleOwner.lifecycleScope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     val message = NostrNip46Transport.awaitNostrConnect(
@@ -820,16 +806,17 @@ class OtherConfigFragment : PreferenceFragment(),
                     userPubkey
                 }
             }.onFailure { if (it is CancellationException) throw it }
-            result.onSuccess {
-                dialog.dismiss()
+            result.onSuccess { userPubkey ->
                 updateNostrSignerSummary()
+                syncNostrProfile(userPubkey)
                 // 登录成功后让阅读页重新统计段评,以便给无评论的段落显示可首评图标。
                 postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                 toastOnUi(getString(R.string.nostr_signer_connected))
+                closeNostrSignerDialog()
             }.onFailure {
                 AppLog.put("Nostr signer pairing failed", it, tag = "Nostr")
-                dialog.dismiss()
                 toastOnUi(it.localizedMessage ?: getString(R.string.nostr_signer_failed))
+                closeNostrSignerDialog()
             }
         }
     }

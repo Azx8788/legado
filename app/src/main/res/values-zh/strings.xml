@@ -1285,8 +1285,8 @@ Cron 使用 5 个字段：**分 时 日 月 周**
     <string name="nostr_signer_logout_confirm">断开当前使用的签名器？</string>
     <string name="nostr_signer_pubkey_copied">公钥已复制</string>
     <string name="nostr_signer_qr_row">二维码配对</string>
-    <string name="nostr_signer_qr_summary">用签名器扫瞄，建立远程签名（NIP-46）</string>
-    <string name="nostr_signer_qr_connected">已连接 · 点击重新配对</string>
+    <string name="nostr_signer_qr_summary">用签名器扫描下方二维码，建立远程签名（NIP-46）；点击二维码可复制配对链接</string>
+    <string name="nostr_signer_qr_connected">已连接远程签名器 · 扫描下方二维码可重新配对，点击二维码复制链接</string>
     <string name="nostr_signer_local_connect">点击连接</string>
     <string name="nostr_signer_local_in_use">%1$s · 当前使用</string>
     <string name="nostr_signer_local_switch">%1$s · 点击设为当前使用</string>

@@ -1351,8 +1351,8 @@ Placeholders:
     <string name="nostr_signer_logout_confirm">Disconnect the signer in use?</string>
     <string name="nostr_signer_pubkey_copied">Public key copied</string>
     <string name="nostr_signer_qr_row">Pair with QR code</string>
-    <string name="nostr_signer_qr_summary">Scan with the signer to sign remotely (NIP-46)</string>
-    <string name="nostr_signer_qr_connected">Connected · tap to pair again</string>
+    <string name="nostr_signer_qr_summary">Scan the QR code below with the signer (NIP-46); tap it to copy the pairing link</string>
+    <string name="nostr_signer_qr_connected">Remote signer connected · scan the QR below to pair again, tap it to copy the link</string>
     <string name="nostr_signer_local_connect">Tap to connect</string>
     <string name="nostr_signer_local_in_use">%1$s · in use</string>
     <string name="nostr_signer_local_switch">%1$s · tap to use</string>
