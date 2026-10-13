@@ -1765,8 +1765,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 val audioUrl = item.audioUrl ?: return@setOnClickListener
                 toggleAudioPlayback(audioUrl)
             }
-            val onReplyClick = View.OnClickListener {
-                val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
+            val onReplyClick = View.OnClickListener onReply@{
+                val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@onReply
                 if (item.itemType != TYPE_MORE && item.pendingState == null) showNostrReplyEditor(item)
             }
             binding.tvReply.setOnClickListener(onReplyClick)
