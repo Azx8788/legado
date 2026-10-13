@@ -58,15 +58,9 @@
             android:summary="@string/nostr_review_summary"
             android:title="@string/nostr_review" />
 
-        <io.legado.app.lib.prefs.Preference
+        <io.legado.app.lib.prefs.NostrSignerPreference
             android:key="nostrSigner"
-            android:summary="@string/nostr_signer_not_connected"
             android:title="@string/nostr_signer" />
-
-        <io.legado.app.lib.prefs.Preference
-            android:key="nostrExternalSigner"
-            android:summary="@string/nostr_signer_not_connected"
-            android:title="@string/nostr_external_signer" />
 
         <io.legado.app.lib.prefs.Preference
             android:key="nostrRelays"
@@ -77,10 +71,6 @@
             android:key="nostrRelayDiscover"
             android:summary="@string/nostr_relays_discover_summary"
             android:title="@string/nostr_relays_discover" />
-
-        <io.legado.app.lib.prefs.Preference
-            android:key="nostrConnectQr"
-            android:title="@string/nostr_signer_pair_qr" />
     </io.legado.app.lib.prefs.PreferenceCategory>
 
     <io.legado.app.lib.prefs.PreferenceCategory

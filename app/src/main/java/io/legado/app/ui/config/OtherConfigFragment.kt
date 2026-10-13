@@ -24,6 +24,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.databinding.DialogEditTextBinding
+import io.legado.app.databinding.DialogNostrSignerBinding
 import io.legado.app.help.AppFreezeMonitor
 import io.legado.app.help.DispatchersMonitor
 import io.legado.app.help.config.AppConfig
@@ -31,10 +32,12 @@ import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.nostr.NostrNip46
 import io.legado.app.help.nostr.NostrNip46Transport
 import io.legado.app.help.nostr.NostrNip55
+import io.legado.app.help.nostr.NostrProfileStore
 import io.legado.app.help.nostr.NostrRelays
 import io.legado.app.help.nostr.NostrSignerStore
 import io.legado.app.utils.QRCodeUtils
 import io.legado.app.lib.dialogs.alert
+import io.legado.app.lib.prefs.NostrSignerPreference
 import io.legado.app.lib.prefs.fragment.PreferenceFragment
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.model.CheckSource
@@ -45,6 +48,7 @@ import io.legado.app.service.McpService
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.widget.number.NumberPickerDialog
 import io.legado.app.utils.LogUtils
+import io.legado.app.utils.getCompatColor
 import io.legado.app.utils.getPrefBoolean
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.putPrefBoolean
@@ -108,6 +112,12 @@ class OtherConfigFragment : PreferenceFragment(),
         upPreferenceSummary(PreferKey.bitmapCacheSize, AppConfig.bitmapCacheSize.toString())
         upPreferenceSummary(PreferKey.imageRetainNum, AppConfig.imageRetainNum.toString())
         upPreferenceSummary(PreferKey.sourceEditMaxLine, AppConfig.sourceEditMaxLine.toString())
+        findPreference<Preference>("nostrSigner")?.let { preference ->
+            (preference as? NostrSignerPreference)?.apply {
+                onConnectClick = { showNostrSignerDialog() }
+                onLogoutClick = { logoutNostrSigner() }
+            }
+        }
         updateNostrSignerSummary()
         updateNostrRelaysSummary()
     }
@@ -183,11 +193,8 @@ class OtherConfigFragment : PreferenceFragment(),
                 toastOnUi(getString(R.string.mcp_token_regenerated))
             }
 
-            "nostrSigner" -> manageNostrSigner()
-            "nostrExternalSigner" -> manageExternalSigner()
             "nostrRelays" -> showNostrRelaysDialog()
             "nostrRelayDiscover" -> discoverNostrRelays()
-            "nostrConnectQr" -> startNostrConnect()
 
             PreferKey.cleanCache -> clearCache()
             PreferKey.uploadRule -> showDialogFragment<DirectLinkUploadConfig>()
@@ -348,50 +355,97 @@ class OtherConfigFragment : PreferenceFragment(),
         }
     }
 
-    private fun manageNostrSigner() {
-        val session = NostrSignerStore.load()
-        if (session != null) {
-            alert(getString(R.string.nostr_signer_connected)) {
-                setMessage(session.userPubkey)
-                positiveButton(getString(R.string.nostr_signer_disconnect)) {
-                    NostrSignerStore.clear()
-                    updateNostrSignerSummary()
-                    // 断开后清掉可能残留的「可首评」占位标记。
-                    postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
-                    toastOnUi(getString(R.string.nostr_signer_disconnected))
-                }
-                if (NostrSignerStore.loadExternal() != null &&
-                    NostrSignerStore.activeSigner != NostrSignerStore.SIGNER_NIP46
-                ) {
-                    neutralButton(getString(R.string.nostr_signer_switch_to)) {
-                        activateSigner(NostrSignerStore.SIGNER_NIP46)
-                    }
-                }
-                cancelButton()
-            }
-            return
+    private var nostrSignerDialog: AlertDialog? = null
+
+    /**
+     * 合并后的签名器入口：二维码配对 / 本机签名器（NIP-55） / bunker 三种连接方式。
+     * 三个方式登录成功后都会自动关闭本弹窗。
+     */
+    private fun showNostrSignerDialog() {
+        val binding = DialogNostrSignerBinding.inflate(layoutInflater)
+        val secondaryColor = requireContext().getCompatColor(R.color.secondaryText)
+        binding.tvQrSummary.setTextColor(secondaryColor)
+        binding.tvLocalSummary.setTextColor(secondaryColor)
+        binding.tvQrSummary.setText(
+            if (NostrSignerStore.load() != null) R.string.nostr_signer_qr_connected
+            else R.string.nostr_signer_qr_summary
+        )
+        val external = NostrSignerStore.loadExternal()
+        binding.tvLocalSummary.text = when {
+            external == null && !NostrNip55.isSignerInstalled(appCtx) ->
+                getString(R.string.nostr_external_signer_not_installed)
+
+            external == null -> getString(R.string.nostr_signer_local_connect)
+            NostrSignerStore.activeSigner == NostrSignerStore.SIGNER_NIP55 ->
+                getString(R.string.nostr_signer_local_in_use, appName(external.packageName))
+
+            else -> getString(R.string.nostr_signer_local_switch, appName(external.packageName))
         }
-        alert(getString(R.string.nostr_signer_connect)) {
-            val restored = AppConfig.nostrRestoredBunkerUri
-            if (!restored.isNullOrBlank()) {
-                toastOnUi(getString(R.string.nostr_signer_restored))
+        binding.etBunker.setText(
+            NostrSignerStore.load()?.bunkerUri ?: AppConfig.nostrRestoredBunkerUri.orEmpty()
+        )
+
+        binding.rowQr.setOnClickListener {
+            // 二维码弹窗自行显示与等待扫码，先关掉本弹窗避免叠层。
+            closeNostrSignerDialog()
+            startNostrConnect()
+        }
+        binding.rowLocal.setOnClickListener {
+            if (external == null) {
+                connectLocalSigner()
+            } else {
+                closeNostrSignerDialog()
+                showLocalSignerManageDialog(external)
             }
-            val editBinding = DialogEditTextBinding.inflate(layoutInflater).apply {
-                editView.hint = "bunker://..."
-                editView.setSingleLine(true)
-                if (!restored.isNullOrBlank()) {
-                    editView.setText(restored)
+        }
+        binding.btnBunkerLogin.setOnClickListener {
+            val bunkerUri = binding.etBunker.text?.toString().orEmpty().trim()
+            if (bunkerUri.isBlank()) {
+                toastOnUi(getString(R.string.nostr_signer_invalid_uri))
+                return@setOnClickListener
+            }
+            connectNostrSigner(bunkerUri) { closeNostrSignerDialog() }
+        }
+
+        nostrSignerDialog = alert(getString(R.string.nostr_signer)) {
+            customView { binding.root }
+        }
+    }
+
+    private fun closeNostrSignerDialog() {
+        nostrSignerDialog?.takeIf { it.isShowing }?.dismiss()
+        nostrSignerDialog = null
+    }
+
+    /** 退出当前使用的签名器；另一台已连接时由 store 的回退逻辑自动接上。 */
+    private fun logoutNostrSigner() {
+        val session = NostrSignerStore.load()
+        val external = NostrSignerStore.loadExternal()
+        if (session == null && external == null) return
+        alert(getString(R.string.nostr_signer_logout), getString(R.string.nostr_signer_logout_confirm)) {
+            okButton {
+                when (NostrSignerStore.activeSigner) {
+                    NostrSignerStore.SIGNER_NIP55 -> NostrSignerStore.clearExternal()
+                    NostrSignerStore.SIGNER_NIP46 -> NostrSignerStore.clear()
+                    else -> if (NostrSignerStore.load() != null) NostrSignerStore.clear()
+                    else NostrSignerStore.clearExternal()
                 }
-            }
-            customView { editBinding.root }
-            positiveButton(getString(R.string.nostr_signer_connect)) {
-                connectNostrSigner(editBinding.editView.text?.toString().orEmpty())
+                updateNostrSignerSummary()
+                // 退出后清掉可能残留的「可首评」占位标记。
+                postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
+                toastOnUi(getString(R.string.nostr_signer_disconnected))
             }
             cancelButton()
         }
     }
 
-    private fun connectNostrSigner(bunkerUri: String) {
+    /** 签名器 App 名（取不到时回退包名），用于弹窗内的行副标题。 */
+    private fun appName(packageName: String): String = runCatching {
+        packageManager.getApplicationLabel(packageManager.getApplicationInfo(packageName, 0))
+            .toString()
+    }.getOrDefault(packageName)
+
+    private fun connectNostrSigner(bunkerUri: String, onSuccess: () -> Unit = {}) {
         val connection = runCatching { NostrNip46.parseBunkerUri(bunkerUri) }
             .getOrElse {
                 toastOnUi(it.localizedMessage ?: getString(R.string.nostr_signer_invalid_uri))
@@ -456,8 +510,10 @@ class OtherConfigFragment : PreferenceFragment(),
                     userPubkey
                 }
             }.onFailure { if (it is CancellationException) throw it }
-            result.onSuccess {
+            result.onSuccess { userPubkey ->
                 updateNostrSignerSummary()
+                onSuccess()
+                syncNostrProfile(userPubkey)
                 // 登录成功后让阅读页重新统计段评,以便给无评论的段落显示可首评图标。
                 postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                 toastOnUi(getString(R.string.nostr_signer_connected))
@@ -468,35 +524,35 @@ class OtherConfigFragment : PreferenceFragment(),
         }
     }
 
-    /** NIP-55：连接/断开本机签名器 App，与远程签名器互斥。 */
-    private fun manageExternalSigner() {
-        val account = NostrSignerStore.loadExternal()
-        if (account != null) {
-            alert(getString(R.string.nostr_external_signer)) {
-                setMessage(account.userPubkey)
-                positiveButton(getString(R.string.nostr_signer_disconnect)) {
-                    NostrSignerStore.clearExternal()
-                    updateNostrSignerSummary()
-                    // 断开后清掉可能残留的「可首评」占位标记。
-                    postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
-                    toastOnUi(getString(R.string.nostr_signer_disconnected))
-                }
-                if (NostrSignerStore.load() != null &&
-                    NostrSignerStore.activeSigner != NostrSignerStore.SIGNER_NIP55
-                ) {
-                    neutralButton(getString(R.string.nostr_signer_switch_to)) {
-                        activateSigner(NostrSignerStore.SIGNER_NIP55)
-                    }
-                }
-                cancelButton()
-            }
-            return
-        }
+    /** 本机签名器：未连接时发起 NIP-55 配对（多个签名器由系统弹选择）。 */
+    private fun connectLocalSigner() {
         if (!NostrNip55.isSignerInstalled(appCtx)) {
             toastOnUi(getString(R.string.nostr_external_signer_not_installed))
             return
         }
         nostrExternalSignerConnect.launch(NostrNip55.buildGetPublicKeyIntent())
+    }
+
+    /** 本机签名器已连接：断开（远程也已连接时可切换为当前使用）。 */
+    private fun showLocalSignerManageDialog(account: NostrSignerStore.ExternalAccount) {
+        alert(getString(R.string.nostr_external_signer)) {
+            setMessage(account.userPubkey)
+            positiveButton(getString(R.string.nostr_signer_disconnect)) {
+                NostrSignerStore.clearExternal()
+                updateNostrSignerSummary()
+                // 断开后清掉可能残留的「可首评」占位标记。
+                postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
+                toastOnUi(getString(R.string.nostr_signer_disconnected))
+            }
+            if (NostrSignerStore.load() != null &&
+                NostrSignerStore.activeSigner != NostrSignerStore.SIGNER_NIP55
+            ) {
+                neutralButton(getString(R.string.nostr_signer_switch_to)) {
+                    activateSigner(NostrSignerStore.SIGNER_NIP55)
+                }
+            }
+            cancelButton()
+        }
     }
 
     private fun handleExternalSignerResult(resultCode: Int, data: Intent?) {
@@ -512,6 +568,8 @@ class OtherConfigFragment : PreferenceFragment(),
                     NostrSignerStore.ExternalAccount(packageName, userPubkey)
                 )
                 updateNostrSignerSummary()
+                closeNostrSignerDialog()
+                syncNostrProfile(userPubkey)
                 // 登录成功后让阅读页重新统计段评，以便给无评论的段落显示可首评图标。
                 postEvent(EventBus.REFRESH_REVIEW_SUMMARY, "")
                 toastOnUi(getString(R.string.nostr_signer_connected))
@@ -536,27 +594,18 @@ class OtherConfigFragment : PreferenceFragment(),
     }
 
     private fun updateNostrSignerSummary() {
-        val session = NostrSignerStore.load()
-        val external = NostrSignerStore.loadExternal()
-        val active = NostrSignerStore.activeSigner
-        findPreference<Preference>("nostrSigner")?.summary = when {
-            session != null -> signerSummary(
-                session.userPubkey,
-                active == NostrSignerStore.SIGNER_NIP46
-            )
-
-            !AppConfig.nostrRestoredBunkerUri.isNullOrBlank() ->
-                getString(R.string.nostr_signer_restored)
-
-            else -> getString(R.string.nostr_signer_not_connected)
-        }
-        findPreference<Preference>("nostrExternalSigner")?.summary = external?.let {
-            signerSummary(it.userPubkey, active == NostrSignerStore.SIGNER_NIP55)
-        } ?: getString(R.string.nostr_signer_not_connected)
+        findPreference<Preference>("nostrSigner")?.let { (it as? NostrSignerPreference)?.refresh() }
     }
 
-    private fun signerSummary(pubkey: String, inUse: Boolean): String =
-        if (inUse) getString(R.string.nostr_signer_summary_active, pubkey) else pubkey
+    /** 登录后补拉账号资料（头像/昵称），拉完刷新父条目。 */
+    private fun syncNostrProfile(pubkey: String) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { NostrProfileStore.sync(listOf(pubkey)) }
+            }
+            updateNostrSignerSummary()
+        }
+    }
 
     private fun updateNostrRelaysSummary() {
         val preference = findPreference<Preference>("nostrRelays") ?: return
