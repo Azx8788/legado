@@ -2282,6 +2282,11 @@ class ReadBookActivity : BaseReadBookActivity(),
                 counts = (previous?.counts ?: emptyMap()) + (paragraphNum to bumpedCount)
             )
             synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = bumped }
+            AppLog.put(
+                "诊断1 乐观 reviewId=$paragraphNum base=$base bumped=$bumpedCount " +
+                    "prevHits=${previous?.counts?.filterKeys { kotlin.math.abs(it - paragraphNum) <= 2 }}",
+                tag = "诊断"
+            )
             // 登记本地下限：两次递进回查若仍拿到旧值，上屏时取 max(远端, 下限)，避免 +1 被冲掉。
             putNostrReviewCountFloor(key, paragraphNum, bumpedCount)
             // 第三个参数是「书源计数」位置：必须传书源缓存；传 nostr 摘要会与 nostr 计数重复相加。
@@ -2421,6 +2426,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         // 而 setReviewProviders / upContent 会更新排版列并刷新视图，必须在主线程执行，
         // 否则会抛出 CalledFromWrongThreadException(Only the original thread ... can touch its views)。
         runOnUiThread {
+            AppLog.put("诊断2 上屏计数=${counts.filterValues { it > 0 }}", tag = "诊断")
             val columnsChanged = ChapterProvider.setReviewProviders(
                 countProvider = { targetChapterIndex, reviewId ->
                     when {

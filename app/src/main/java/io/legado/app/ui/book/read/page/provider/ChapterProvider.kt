@@ -1115,6 +1115,11 @@ object ChapterProvider {
                 if (changed) {
                     line.invalidate()
                     anyChanged = true
+                    AppLog.put(
+                        "诊断3 行变化 para=${line.paragraphNum} offset=${line.reviewTitleOffset} " +
+                            "isTitle=${line.isTitle} count=$count",
+                        tag = "诊断"
+                    )
                 }
                 lineIndex++
             }
