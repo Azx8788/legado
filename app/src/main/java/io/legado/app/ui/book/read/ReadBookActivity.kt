@@ -2428,8 +2428,8 @@ class ReadBookActivity : BaseReadBookActivity(),
             )
             reviewSummaryAppliedKey = key
             // 段评列没有实际变化时不做整页重绘：发布后的两次回查若与乐观结果一致，
-            // 原先每次都会重绘整页，表现为退出段评后隔几秒闪几下。
-            // 有变化时才重绘当前阅读视图，避免重新走 curPageChanged() 打断朗读位置。
+            // 原先每次都会重绘整页。有变化时才重绘当前阅读视图，
+            // 避免重新走 curPageChanged() 打断朗读位置。
             if (columnsChanged) {
                 binding.readView.upContent(relativePosition = 0, resetPageOffset = false)
             }

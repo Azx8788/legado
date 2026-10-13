@@ -9,6 +9,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import splitties.init.appCtx
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -57,22 +58,44 @@ object NostrNip55Client {
     }
 
     /**
-     * 后台通道：查询 `content://<包名>.<方法>`，projection 依次是 [载荷, 对方公钥, 当前用户公钥]。
-     * 返回 null 表示签名器无法后台应答（未记住选择 / 不认识该方法 / 需要前台授权），调用方退回 Intent。
+     * 后台通道：查询 `content://<包名>.<方法>`；NIP-55 要求路径用大写方法名（如 SIGN_EVENT），
+     * projection 依次是 [载荷, 对方公钥, 当前用户公钥]。
+     * 返回 null 表示签名器无法后台应答（未记住选择 / 不认识该方法 / 需要前台授权），调用方退回 Intent；
+     * 返回 rejected 列时抛错：用户已选「始终拒绝」，按规范不再退回前台弹窗。
      */
     private suspend fun queryBackground(
         packageName: String,
         command: String,
         payload: String,
         userPubkey: String
-    ): NostrNip55.Result? = withBackgroundQuery {
-        appCtx.contentResolver.query(
-            Uri.parse("content://$packageName.$command"),
-            arrayOf(payload, "", userPubkey),
-            null,
-            null,
-            null
-        )
+    ): NostrNip55.Result? {
+        // 查询是跨进程 binder 调用，必须离开主线程；签名器未开后台权限时 query 返回 null。
+        val cursor = withContext(Dispatchers.IO) {
+            runCatching {
+                appCtx.contentResolver.query(
+                    Uri.parse("content://$packageName.${command.uppercase(Locale.ROOT)}"),
+                    arrayOf(payload, "", userPubkey),
+                    null,
+                    null,
+                    null
+                )
+            }.getOrNull()
+        } ?: return null
+        return cursor.use {
+            if (it.getColumnIndex("rejected") >= 0) {
+                throw IllegalStateException("The signer request was rejected")
+            }
+            if (!it.moveToFirst()) return null
+            val result = it.column("result")
+            val event = it.column("event")
+            if (result.isNullOrBlank() && event.isNullOrBlank()) return null
+            NostrNip55.Result(
+                result = result,
+                event = event,
+                packageName = null,
+                rejected = false
+            )
+        }
     }
 
     private suspend fun awaitForeground(intent: Intent): NostrNip55.Result =
@@ -106,32 +129,6 @@ object NostrNip55Client {
                 channel.close()
             }
         }
-
-    /**
-     * 读后台查询结果。查询本身是跨进程 binder 调用，必须离开主线程；
-     * 签名器未开后台权限时 `query` 返回 null。
-     */
-    private suspend fun withBackgroundQuery(
-        query: () -> Cursor?
-    ): NostrNip55.Result? = withContext(Dispatchers.IO) {
-        runCatching {
-            val cursor = query() ?: return@runCatching null
-            cursor.use {
-                // 出现 rejected 列表示签名器明确拒绝，按规范不再退回前台弹窗。
-                if (it.getColumnIndex("rejected") >= 0) return@use null
-                if (!it.moveToFirst()) return@use null
-                val result = it.column("result")
-                val event = it.column("event")
-                if (result.isNullOrBlank() && event.isNullOrBlank()) return@use null
-                NostrNip55.Result(
-                    result = result,
-                    event = event,
-                    packageName = null,
-                    rejected = false
-                )
-            }
-        }.getOrNull()
-    }
 
     private fun Cursor.column(name: String): String? {
         val index = getColumnIndex(name)
