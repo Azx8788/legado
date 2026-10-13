@@ -1642,7 +1642,6 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.tvTime.gone()
                 binding.ivMedia.gone()
                 binding.tvAudio.gone()
-                binding.tvReply.gone()
                 binding.tvReplyBottom.gone()
                 binding.llFooter.gone()
                 binding.tvContent.visible()
@@ -1694,9 +1693,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             val canReply = item.pendingState == null &&
                     !item.nostrAuthorPubkey.isNullOrBlank() &&
                     NostrSigners.current() != null
-            // 主评论的回复按钮在昵称行，回复项的移到时间行，避免没有昵称时独占一行
-            binding.tvReply.visibility = if (canReply && !item.isReply) View.VISIBLE else View.GONE
-            binding.tvReplyBottom.visibility = if (canReply && item.isReply) View.VISIBLE else View.GONE
+            // 回复按钮统一放在时间行，主评论与回复项保持一致
+            binding.tvReplyBottom.visibility = if (canReply) View.VISIBLE else View.GONE
             val hasText = binding.tvContent.text?.isNotBlank() == true
             binding.tvContent.visibility = if (hasText) View.VISIBLE else View.GONE
             binding.tvContent.textSize = if (item.isReply) 14f else 16f
@@ -1774,7 +1772,6 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@onReply
                 if (item.itemType != TYPE_MORE && item.pendingState == null) showNostrReplyEditor(item)
             }
-            binding.tvReply.setOnClickListener(onReplyClick)
             binding.tvReplyBottom.setOnClickListener(onReplyClick)
             binding.llLikeArea.setOnClickListener {
                 val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
