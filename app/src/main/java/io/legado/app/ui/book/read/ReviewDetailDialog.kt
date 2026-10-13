@@ -411,6 +411,82 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         }
     }
 
+    /**
+     * 把已签名事件拼成本地「已确认」条目（pendingState=null，带真实事件 id）：
+     * 可安全入缓存与上屏，不会像占位项那样被缓存剔除，也不会与联网结果重复。
+     */
+    private fun confirmPublishedComment(
+        published: NostrReviewPublisher.PublishedComment,
+        text: String
+    ): ReviewDetailItem {
+        val event = published.event
+        val pubkey = event.optString("pubkey").takeIf { it.isNotBlank() }
+            ?: NostrSigners.currentPubkey()?.takeIf { it.isNotBlank() }
+        val profile = pubkey?.let { NostrProfileStore.get(it) }
+        return ReviewDetailItem(
+            id = event.optString("id").takeIf { it.isNotBlank() },
+            avatar = profile?.picture,
+            name = profile?.bestName ?: pubkey?.take(12) ?: getString(R.string.nostr_comment_me),
+            nostrAuthorPubkey = pubkey,
+            nostrRootExcerptId = published.rootExcerptId,
+            nostrRootExcerptPubkey = published.rootExcerptPubkey,
+            badges = emptyList(),
+            content = text,
+            imageUrl = null,
+            audioUrl = null,
+            time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                .format(Date(event.optLong("created_at", System.currentTimeMillis() / 1000) * 1000)),
+            likeCount = 0,
+            likedByMe = false,
+            myReactionId = null,
+            replyCount = 0,
+            replies = emptyList(),
+            pendingState = null
+        )
+    }
+
+    /** 发布成功后把已确认评论并入详情缓存：重开该段时先显它，不必等联网。 */
+    private fun cachePublishedComment(parentId: String?, item: ReviewDetailItem) {
+        val book = ReadBook.book ?: return
+        val cacheKey = NostrReviewDetailCache.key(
+            book.bookUrl, ReadBook.durChapterIndex, paragraphNum
+        )
+        val cached = NostrReviewDetailCache.get(cacheKey).orEmpty()
+        val merged = if (parentId == null) {
+            listOf(item) + cached.filterNot { it.id != null && it.id == item.id }
+        } else {
+            attachReplyTo(cached, parentId, item) ?: return
+        }
+        NostrReviewDetailCache.put(cacheKey, merged)
+    }
+
+    /** 在（可能嵌套的）评论列表里找到 parentId 并把回复挂上去；找不到返回 null。 */
+    private fun attachReplyTo(
+        items: List<ReviewDetailItem>,
+        parentId: String,
+        reply: ReviewDetailItem
+    ): List<ReviewDetailItem>? {
+        var found = false
+        val updated = items.map { item ->
+            if (item.id == parentId) {
+                found = true
+                item.copy(
+                    replies = item.replies.filterNot { it.id != null && it.id == reply.id } + reply,
+                    replyCount = (item.replyCount ?: item.replies.size) + 1
+                )
+            } else {
+                val replies = attachReplyTo(item.replies, parentId, reply)
+                if (replies != null) {
+                    found = true
+                    item.copy(replies = replies)
+                } else {
+                    item
+                }
+            }
+        }
+        return if (found) updated else null
+    }
+
     /** 按 id 递归移除本地占位项。 */
     private fun removeLocalPendingItem(localId: String) {
         localPendingPublish.remove(localId)
@@ -523,14 +599,24 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                     }
                 }
             },
-            onSuccess = {
+            onSuccess = { published ->
                 AppLog.put("段评发布成功 id=$localId", tag = "Nostr")
                 // 清草稿与刷新统计与弹窗无关，弹窗已关也要执行
                 clearReviewDraft(draftKey)
                 postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
-                // 占位项移除依赖当前列表，弹窗没了就靠下次打开重新拉取
+                // 重发成功同样立刻入缓存/上屏，不必等联网回读。
+                val confirmed = confirmPublishedComment(published, args.text)
+                cachePublishedComment(parentId = args.parentId, item = confirmed)
                 runOnUiIfAlive {
                     removeLocalPendingItem(localId)
+                    val parentId = args.parentId
+                    if (parentId != null) {
+                        appendReplyToItem(parentId, confirmed)
+                    } else {
+                        detailItems.add(0, confirmed)
+                        reindexMainItems()
+                    }
+                    renderUiItems()
                     loadDetailPage(paragraphNum, 1, append = false)
                 }
             },
@@ -596,15 +682,20 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             )
                         }
                     },
-                    onSuccess = {
+                    onSuccess = { published ->
                         AppLog.put("段评发布成功 id=$localId", tag = "Nostr")
                         // 清草稿与刷新统计与弹窗无关，弹窗已关也要执行；
                         // 通知阅读页刷新段评统计,让「首评」气泡(-1 占位)变为真实评论数。
                         clearReviewDraft(draftKey)
                         postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
-                        // 占位项移除依赖当前列表，弹窗没了就靠下次打开重新拉取
+                        // 已确认评论立刻入缓存/上屏：弹窗已关也写缓存，重开该段不必等联网。
+                        val confirmed = confirmPublishedComment(published, comment)
+                        cachePublishedComment(parentId = null, item = confirmed)
                         runOnUiIfAlive {
                             removeLocalPendingItem(localId)
+                            detailItems.add(0, confirmed)
+                            reindexMainItems()
+                            renderUiItems()
                             loadDetailPage(paragraphNum, 1, append = false)
                         }
                     },
@@ -1750,14 +1841,18 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                                 )
                             }
                         },
-                        onSuccess = {
+                        onSuccess = { published ->
                             AppLog.put("段评发布成功 id=$localId", tag = "Nostr")
                             // 清草稿与刷新统计与弹窗无关，弹窗已关也要执行；回复也同样计入图标计数
                             clearReviewDraft(draftKey)
                             postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
-                            // 占位项移除依赖当前列表，弹窗没了就靠下次打开重新拉取
+                            // 已确认回复立刻入缓存/上屏（挂在父评论下），重开该段不必等联网。
+                            val confirmed = confirmPublishedComment(published, content)
+                            cachePublishedComment(parentId = parentId, item = confirmed)
                             runOnUiIfAlive {
                                 removeLocalPendingItem(localId)
+                                appendReplyToItem(parentId, confirmed)
+                                renderUiItems()
                                 loadDetailPage(paragraphNum, 1, append = false)
                             }
                         },

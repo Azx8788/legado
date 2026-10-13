@@ -2274,8 +2274,9 @@ class ReadBookActivity : BaseReadBookActivity(),
         }
         // 乐观：本段计数先本地 +1 并立即上屏，图标/气泡马上出现；随后再联网校正。
         val floorCount: Int? = if (paragraphNum > 0) {
-            val base = previous?.counts?.get(paragraphNum)
-                ?: ChapterProvider.getReviewCount(paragraphNum)
+            // paragraphNum 实为 reviewId，与 counts 同键空间；-1 占位（无段评）按 0 起算。
+            val base = (previous?.counts?.get(paragraphNum)
+                ?: ChapterProvider.getReviewCountByReviewId(paragraphNum)).coerceAtLeast(0)
             val bumpedCount = base + 1
             val bumped = (previous ?: ReviewSummaryResult(emptyMap(), emptyMap())).copy(
                 counts = (previous?.counts ?: emptyMap()) + (paragraphNum to bumpedCount)
@@ -2283,7 +2284,13 @@ class ReadBookActivity : BaseReadBookActivity(),
             synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = bumped }
             // 登记本地下限：两次递进回查若仍拿到旧值，上屏时取 max(远端, 下限)，避免 +1 被冲掉。
             putNostrReviewCountFloor(key, paragraphNum, bumpedCount)
-            applyReviewSummary(key, chapterIndex, bumped)
+            // 第三个参数是「书源计数」位置：必须传书源缓存；传 nostr 摘要会与 nostr 计数重复相加。
+            applyReviewSummary(
+                key,
+                chapterIndex,
+                synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
+                    ?: ReviewSummaryResult(emptyMap(), emptyMap())
+            )
             bumpedCount
         } else {
             null
@@ -2473,8 +2480,9 @@ class ReadBookActivity : BaseReadBookActivity(),
     }
 
     /**
-     * 对联网回来的 Nostr 统计施加本地下限：只提升有下限记录且远端非负的段落号。
-     * 远端是 -1(可首评占位)或其它负数时保持原值，不把占位语义 max 成正数。
+     * 对联网回来的 Nostr 统计施加本地下限：只提升有下限记录的段落号。
+     * 下限只在刚发布过的段落上登记，与远端 -1(可首评占位)冲突时也保留下限——
+     * 远端尚未索引到新评论时，占位不能被当成「把 +1 冲掉」的旧值。
      */
     private fun floorNostrReviewCounts(key: String, counts: Map<Int, Int>): Map<Int, Int> {
         val floors = synchronized(nostrReviewCountFloor) {
@@ -2483,7 +2491,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         var floored = false
         val result = counts.mapValues { (paragraphNum, remoteCount) ->
             val floor = floors[paragraphNum]
-            if (floor != null && remoteCount >= 0 && floor > remoteCount) {
+            if (floor != null && floor > remoteCount) {
                 floored = true
                 floor
             } else {

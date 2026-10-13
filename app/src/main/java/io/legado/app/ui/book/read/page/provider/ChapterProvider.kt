@@ -1139,6 +1139,15 @@ object ChapterProvider {
         return provider(chapterIndex, reviewId)
     }
 
+    /**
+     * 按 reviewId（与段评统计 counts 同一键空间，即段落号 - reviewTitleOffset）取当前已上屏的计数；
+     * 供发布后的乐观计数拿基线：调用方手上只有 reviewId，没有段落号。
+     */
+    fun getReviewCountByReviewId(
+        reviewId: Int,
+        chapterIndex: Int = ReadBook.durChapterIndex,
+    ): Int = reviewCountProvider?.invoke(chapterIndex, reviewId) ?: 0
+
     private fun updateReviewCount(
         textLine: TextLine,
         paragraphNum: Int,

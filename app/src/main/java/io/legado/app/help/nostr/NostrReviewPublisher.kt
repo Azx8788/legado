@@ -22,16 +22,16 @@ object NostrReviewPublisher {
 
     /**
      * 与 UI 生命周期无关的发布：关弹窗/退回正文也不中断。
-     * [block] 在 [publishScope] 内执行，成功回调 [onSuccess]；
+     * [block] 在 [publishScope] 内执行，成功把结果交给 [onSuccess]；
      * 失败写一行日志并回调 [onFailure]，不吞异常；取消（进程结束）不当作业务失败。
      */
-    fun launchPublish(
+    fun <T> launchPublish(
         paragraphNum: Int,
-        block: suspend () -> Unit,
-        onSuccess: () -> Unit = {},
+        block: suspend () -> T,
+        onSuccess: (T) -> Unit = {},
         onFailure: (Throwable) -> Unit = {}
     ): Job = publishScope.launch {
-        try {
+        val result = try {
             block()
         } catch (e: CancellationException) {
             // 进程级作用域只在进程结束时取消，此时已无发布/回写意义，直接结束
@@ -41,8 +41,15 @@ object NostrReviewPublisher {
             onFailure(e)
             return@launch
         }
-        onSuccess()
+        onSuccess(result)
     }
+
+    /** 发布成功的评论事件及其所属摘录，供调用方本地上屏/入缓存，不必等联网回读。 */
+    data class PublishedComment(
+        val event: JSONObject,
+        val rootExcerptId: String,
+        val rootExcerptPubkey: String
+    )
 
     suspend fun postParagraphComment(
         book: Book,
@@ -50,7 +57,7 @@ object NostrReviewPublisher {
         paragraphs: List<String>,
         paragraphIndex: Int,
         comment: String
-    ) {
+    ): PublishedComment {
         val text = comment.trim()
         require(text.isNotEmpty()) { "Comment cannot be empty" }
         val paragraph = paragraphs.getOrNull(paragraphIndex - 1)
@@ -92,7 +99,12 @@ object NostrReviewPublisher {
             .put("content", text)
             .put("created_at", createdAt + 1)
             .put("tags", commentTags(bookIdentifier, excerptId, signer.userPubkey, excerptRelay))
-        signAndPublish(signer, commentEvent, listOfNotNull(excerptRelay))
+        val publishedComment = signAndPublish(signer, commentEvent, listOfNotNull(excerptRelay))
+        return PublishedComment(
+            event = publishedComment.event,
+            rootExcerptId = excerptId,
+            rootExcerptPubkey = signer.userPubkey
+        )
     }
 
     /**
@@ -125,7 +137,7 @@ object NostrReviewPublisher {
         parentCommentId: String,
         parentAuthorPubkey: String,
         content: String
-    ) {
+    ): PublishedComment {
         val text = content.trim()
         require(text.isNotEmpty()) { "Comment cannot be empty" }
         val signer = NostrSigners.current()
@@ -133,7 +145,7 @@ object NostrReviewPublisher {
         val createdAt = System.currentTimeMillis() / 1000
         // 被引用的摘录/父评论所在中继：既作为 relay hint 写入标签，也额外投递过去。
         val referencedRelays = NostrReviewClient.findEventRelays(listOf(rootExcerptId, parentCommentId))
-        signAndPublish(
+        val published = signAndPublish(
             signer,
             JSONObject()
                 .put("kind", 1111)
@@ -152,6 +164,11 @@ object NostrReviewPublisher {
                     )
                 ),
             extraRelays = referencedRelays.values.toList()
+        )
+        return PublishedComment(
+            event = published.event,
+            rootExcerptId = rootExcerptId,
+            rootExcerptPubkey = rootExcerptPubkey
         )
     }
 
