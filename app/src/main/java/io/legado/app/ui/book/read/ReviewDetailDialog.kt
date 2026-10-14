@@ -1287,7 +1287,6 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val replyToName: String? = null,
         val itemType: Int = TYPE_NORMAL,
         val parentKey: String? = null,
-        val moreCount: Int = 0,
         val pendingState: String? = null
     )
 
@@ -1301,7 +1300,6 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             if (loadedReplyCount <= 0) return@forEach
 
             if (!expandedReplyParentKeys.contains(parentKey)) {
-                val moreCount = max(item.replyCount ?: 0, loadedReplyCount)
                 list.add(
                     ReviewUiItem(
                         id = null,
@@ -1315,8 +1313,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         likeCount = null,
                         isReply = false,
                         itemType = TYPE_MORE,
-                        parentKey = parentKey,
-                        moreCount = moreCount
+                        parentKey = parentKey
                     )
                 )
                 return@forEach
@@ -1675,7 +1672,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.tvReplyTo.gone()
                 binding.llFooter.gone()
                 binding.tvContent.visible()
-                binding.tvContent.text = context.getString(R.string.review_more_replies, item.moreCount)
+                binding.tvContent.text = context.getString(R.string.review_more_replies)
                 binding.tvContent.textSize = 14f
                 binding.tvContent.setTextColor(context.getCompatColor(R.color.accent))
                 binding.tvContent.setPadding(0, 0, 0, 0)
