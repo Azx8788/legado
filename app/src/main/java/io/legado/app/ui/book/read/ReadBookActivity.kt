@@ -2077,18 +2077,20 @@ class ReadBookActivity : BaseReadBookActivity(),
                     ?: ReviewSummaryResult(emptyMap(), emptyMap())
             )
             warmNostrReviewDetails(book, chapterIndex, textChapter, cached.counts)
-            return
+        } else {
+            readDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key)?.let { diskCached ->
+                synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = diskCached }
+                applyReviewSummary(
+                    key,
+                    chapterIndex,
+                    synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
+                        ?: ReviewSummaryResult(emptyMap(), emptyMap())
+                )
+                warmNostrReviewDetails(book, chapterIndex, textChapter, diskCached.counts)
+            }
         }
-        readDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key)?.let { diskCached ->
-            synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = diskCached }
-            applyReviewSummary(
-                key,
-                chapterIndex,
-                synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
-                    ?: ReviewSummaryResult(emptyMap(), emptyMap())
-            )
-            warmNostrReviewDetails(book, chapterIndex, textChapter, diskCached.counts)
-        }
+        // 内存命中也要继续联网刷新（stale-while-revalidate）：中继事件索引有延迟，
+        // 若只在会话内吃缓存，后到的段评会一直不显示，直到重启应用重新拉取。
         synchronized(nostrReviewSummaryLoadingKeys) {
             if (!nostrReviewSummaryLoadingKeys.add(key)) return
         }
@@ -2110,7 +2112,10 @@ class ReadBookActivity : BaseReadBookActivity(),
             if (summary == null || !AppConfig.nostrReviewEnabled) return@onSuccess
             val currentBook = ReadBook.book ?: return@onSuccess
             if (buildReviewSummaryKey(currentBook, ReadBook.durChapterIndex) != key) return@onSuccess
-            val result = ReviewSummaryResult(summary.counts, emptyMap())
+            // 中继索引有延迟：本次仍拿不到刚发布的评论时用登记的下限兜底，
+            // 别把「发布后还没索引到」的旧结果写进缓存，否则本次会话里气泡会丢。
+            val counts = floorNostrReviewCounts(key, summary.counts)
+            val result = ReviewSummaryResult(counts, emptyMap())
             synchronized(nostrReviewSummaryCache) {
                 nostrReviewSummaryCache[key] = result
             }
