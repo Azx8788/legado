@@ -188,8 +188,12 @@ import io.legado.app.data.entities.save
 private const val REVIEW_SUMMARY_REFRESH_DELAY_MS = 2_500L
 private const val REVIEW_SUMMARY_REFRESH_DELAY2_MS = 6_000L
 
-/** 本地计数下限的保护窗口：第二次回查之后仍再等一段时间，超时即清除、完全以远端为准。 */
-private const val REVIEW_SUMMARY_FLOOR_TTL_MS = 8_000L
+/**
+ * 本地计数下限的保护窗口上限：中继写入/索引延迟实测 ~10s（个别更久），8s 会在中继索引到之前
+ * 就解除下限，使那一刷把 -1 占位当真值上屏、气泡“消失几秒又出现”。改为等待「中继已索引到」
+ * （见 clearSatisfiedNostrReviewCountFloors）立即解除，此处只做兜底上限。
+ */
+private const val REVIEW_SUMMARY_FLOOR_TTL_MS = 45_000L
 
 /** 选中态下点气泡时，临时气泡延迟多久清除（留出点击时间）。 */
 private const val TRANSIENT_REVIEW_LINGER_MS = 2000L
@@ -2115,10 +2119,8 @@ class ReadBookActivity : BaseReadBookActivity(),
             // 中继索引有延迟：本次仍拿不到刚发布的评论时用登记的下限兜底，
             // 别把「发布后还没索引到」的旧结果写进缓存，否则本次会话里气泡会丢。
             val counts = floorNostrReviewCounts(key, summary.counts)
-            AppLog.put(
-                "段评诊断 入缓存 key=$key 正计数=${counts.filterValues { it > 0 }}",
-                tag = "Nostr"
-            )
+            // 远端已索引到刚发布的评论 → 下限完成使命，立即撤掉（未索引到的仍保留）。
+            clearSatisfiedNostrReviewCountFloors(key, summary.counts)
             val result = ReviewSummaryResult(counts, emptyMap())
             synchronized(nostrReviewSummaryCache) {
                 nostrReviewSummaryCache[key] = result
@@ -2439,10 +2441,6 @@ class ReadBookActivity : BaseReadBookActivity(),
         // 而 setReviewProviders / upContent 会更新排版列并刷新视图，必须在主线程执行，
         // 否则会抛出 CalledFromWrongThreadException(Only the original thread ... can touch its views)。
         runOnUiThread {
-            AppLog.put(
-                "段评诊断 上屏 正计数=${counts.filterValues { it > 0 }}",
-                tag = "Nostr"
-            )
             val columnsChanged = ChapterProvider.setReviewProviders(
                 countProvider = { targetChapterIndex, reviewId ->
                     when {
@@ -2498,6 +2496,22 @@ class ReadBookActivity : BaseReadBookActivity(),
     private fun clearNostrReviewCountFloors() {
         synchronized(nostrReviewCountFloor) {
             nostrReviewCountFloor.clear()
+        }
+    }
+
+    /**
+     * 远端已经索引到刚发布的评论（该段计数已达到登记的下限）时，立即撤掉下限，
+     * 不必等下限定过时；这样既能避免“中继未索引”的窗口把气泡写没，又不会长期保留乐观值。
+     */
+    private fun clearSatisfiedNostrReviewCountFloors(key: String, remoteCounts: Map<Int, Int>) {
+        synchronized(nostrReviewCountFloor) {
+            val floors = nostrReviewCountFloor[key] ?: return
+            floors.entries.removeAll { (paragraphNum, floor) ->
+                (remoteCounts[paragraphNum] ?: 0) >= floor
+            }
+            if (floors.isEmpty()) {
+                nostrReviewCountFloor.remove(key)
+            }
         }
     }
 

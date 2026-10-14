@@ -1073,9 +1073,6 @@ object ChapterProvider {
         val chapterIndex = textChapter.chapter.index
         var anyChanged = false
         var pageIndex = 0
-        var scannedLines = 0
-        var maxPara = 0
-        var positiveLines = 0
         while (pageIndex < textChapter.pageSize) {
             val page = textChapter.getPage(pageIndex) ?: break
             val lines = page.lines
@@ -1083,8 +1080,6 @@ object ChapterProvider {
             var lineIndex = 0
             while (lineIndex < lineSize) {
                 val line = lines.getOrNull(lineIndex) ?: break
-                scannedLines++
-                if (line.paragraphNum > maxPara) maxPara = line.paragraphNum
                 val count = resolveReviewCount(
                     paragraphNum = line.paragraphNum,
                     isTitle = line.isTitle,
@@ -1117,15 +1112,6 @@ object ChapterProvider {
                         changed = true
                     }
                 }
-                if (count > 0) {
-                    positiveLines++
-                    AppLog.put(
-                        "段评诊断 行 para=${line.paragraphNum} off=${line.reviewTitleOffset} " +
-                            "title=${line.isTitle} end=${line.isParagraphEnd} count=$count " +
-                            "hasCol=${line.columns.any { it is ReviewColumn }} changed=$changed",
-                        tag = "Nostr"
-                    )
-                }
                 if (changed) {
                     line.invalidate()
                     anyChanged = true
@@ -1133,13 +1119,6 @@ object ChapterProvider {
                 lineIndex++
             }
             pageIndex++
-        }
-        if (chapterIndex == ReadBook.durChapterIndex) {
-            AppLog.put(
-                "段评诊断 扫描 章=$chapterIndex 页=${textChapter.pageSize} 行=$scannedLines " +
-                    "maxPara=$maxPara 正计数行=$positiveLines",
-                tag = "Nostr"
-            )
         }
         return anyChanged
     }

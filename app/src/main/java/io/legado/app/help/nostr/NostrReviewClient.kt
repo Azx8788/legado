@@ -92,11 +92,6 @@ object NostrReviewClient {
             AppLog.put("查询 Nostr 段落摘录失败\n${it.localizedMessage}", it, tag = "Nostr")
         }.getOrDefault(emptyList())
         val matched = matchParagraphs(excerpts, paragraphs, chapterTitle)
-        AppLog.put(
-            "段评诊断 查询 章节=$chapterTitle 书=${book.name}|${book.author} " +
-                "段落=${paragraphs.size} 摘录=${excerpts.size} 命中段=${matched.keys.sorted()}",
-            tag = "Nostr"
-        )
         val unlocated = loadUnlocatedComments(chapterUnlocated(excerpts, matched, chapterTitle))
         val excerptIds = matched.values.flatten().map { it.id }.distinct()
         if (excerptIds.isEmpty()) {
@@ -120,11 +115,6 @@ object NostrReviewClient {
                 else -> null
             }
         }.toMap()
-        AppLog.put(
-            "段评诊断 评论 摘录id=${excerptIds.size} 评论=${comments.size} " +
-                "正计数=${counts.filterValues { it > 0 }} 占位=${counts.count { it.value < 0 }} 未定位=${unlocated.size}",
-            tag = "Nostr"
-        )
         if (!allowCreatingComments) return Summary(counts, unlocated)
         val visibleCounts = counts.toMutableMap()
         paragraphs.forEachIndexed { index, paragraph ->
