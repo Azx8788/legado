@@ -1383,6 +1383,7 @@ Placeholders:
     <string name="nostr_comment_reply">Reply</string>
     <string name="nostr_comment_reply_to">Reply to %1$s</string>
     <string name="nostr_comment_hint">Write a paragraph comment</string>
+    <string name="nostr_comment_need_connect">Connect a Nostr signer first</string>
     <string name="nostr_comment_publish">Publish</string>
     <string name="nostr_comment_publishing">Publishing…</string>
     <string name="nostr_comment_failed">Unable to publish Nostr comment</string>

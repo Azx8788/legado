@@ -9,6 +9,7 @@ import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePaddingRelative
@@ -68,6 +69,7 @@ import io.legado.app.utils.windowSize
 import io.legado.app.databinding.DialogRecyclerViewBinding
 import io.legado.app.databinding.ItemReviewCommentBinding
 import io.legado.app.ui.book.read.page.provider.ChapterProvider
+import io.legado.app.ui.nostr.NostrSignerDialogController
 import io.legado.app.ui.widget.dialog.PhotoDialog
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Dispatchers.Main
@@ -101,6 +103,19 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private val detailItems = ArrayList<ReviewDetailItem>()
     /** 本地占位项的发布参数，用于草稿态直接重发；成功移除占位时清理。 */
     private val localPendingPublish = HashMap<String, PublishArgs>()
+
+    /** NIP-55：本机签名器用 get_public_key 回包。段评弹窗内也能直接发起本机签名器连接。 */
+    private val nostrExternalSignerConnect =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            nostrSignerDialog.onNip55Result(result.resultCode, result.data)
+        }
+
+    private val nostrSignerDialog by lazy {
+        NostrSignerDialogController(this) { intent -> nostrExternalSignerConnect.launch(intent) }
+    }
+
+    /** 未登录时点击评论/回复/点赞暂存的待执行动作，连接成功后接续执行一次。 */
+    private var pendingSignerAction: (() -> Unit)? = null
 
     private val expandedReplyParentKeys = HashSet<String>()
     private var reviewAudioPlayer: ExoPlayer? = null
@@ -241,7 +256,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     }
 
     private fun addNostrCommentAction() {
-        if (!AppConfig.nostrReviewEnabled || NostrSigners.current() == null) return
+        if (!AppConfig.nostrReviewEnabled) return
         binding.toolBar.findViewWithTag<View>("nostr_comment_action")?.let(binding.toolBar::removeView)
         binding.toolBar.findViewWithTag<View>("review_count_tag")?.let {
             (it.layoutParams as? androidx.appcompat.widget.Toolbar.LayoutParams)?.marginEnd = 48.dpToPx()
@@ -254,7 +269,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             )
             contentDescription = getString(R.string.nostr_comment_write)
             setBackgroundResource(android.R.drawable.list_selector_background)
-            setOnClickListener { showNostrCommentEditor() }
+            setOnClickListener { onWriteCommentAction() }
         }
         val layoutParams = androidx.appcompat.widget.Toolbar.LayoutParams(
             42.dpToPx(),
@@ -635,6 +650,35 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 }
             }
         )
+    }
+
+    /**
+     * 需要签名器的动作：已连接直接执行，未连接先弹「去连接」确认框，
+     * 连接成功后接续执行原动作。
+     */
+    private fun requireNostrSigner(action: () -> Unit) {
+        if (NostrSigners.current() != null) {
+            action()
+            return
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.nostr_signer)
+            .setMessage(R.string.nostr_comment_need_connect)
+            .setPositiveButton(R.string.nostr_signer_connect_nostr) { _, _ ->
+                pendingSignerAction = action
+                nostrSignerDialog.show(onConnected = ::resumePendingSignerAction)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun onWriteCommentAction() = requireNostrSigner { showNostrCommentEditor() }
+
+    private fun resumePendingSignerAction() {
+        if (NostrSigners.current() == null) return
+        val action = pendingSignerAction ?: return
+        pendingSignerAction = null
+        runOnUiIfAlive { action() }
     }
 
     private fun showNostrCommentEditor() {
@@ -1725,7 +1769,6 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             binding.tvContent.text = item.content.orEmpty()
             val canReply = item.pendingState == null &&
                     !item.nostrAuthorPubkey.isNullOrBlank() &&
-                    NostrSigners.current() != null &&
                     item.level < MAX_REPLY_LEVEL
             // 回复按钮统一放在时间行，主评论与回复项保持一致
             binding.tvReplyBottom.visibility = if (canReply) View.VISIBLE else View.GONE
@@ -1804,23 +1847,27 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             }
             val onReplyClick = View.OnClickListener onReply@{
                 val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@onReply
-                if (item.itemType != TYPE_MORE && item.pendingState == null) showNostrReplyEditor(item)
+                if (item.itemType != TYPE_MORE && item.pendingState == null) {
+                    requireNostrSigner { showNostrReplyEditor(item) }
+                }
             }
             binding.tvReplyBottom.setOnClickListener(onReplyClick)
             binding.llLikeArea.setOnClickListener {
                 val item = getItemByLayoutPosition(holder.layoutPosition) ?: return@setOnClickListener
-                if (item.itemType != TYPE_MORE && item.pendingState == null && !item.id.isNullOrBlank() &&
-                    !item.nostrAuthorPubkey.isNullOrBlank() && NostrSigners.current() != null
-                ) {
+                if (item.itemType == TYPE_MORE || item.pendingState != null) return@setOnClickListener
+                val commentId = item.id?.takeIf { it.isNotBlank() } ?: return@setOnClickListener
+                val authorPubkey = item.nostrAuthorPubkey?.takeIf { it.isNotBlank() }
+                    ?: return@setOnClickListener
+                requireNostrSigner {
                     if (item.likedByMe) {
                         // 取消点赞：先本地回退，再删掉自己那条 reaction，失败则恢复
                         val reactionId = item.myReactionId
-                        applyLikeState(item.id, liked = false)
-                        deleteNostrReaction(item.id, reactionId)
+                        applyLikeState(commentId, liked = false)
+                        deleteNostrReaction(commentId, reactionId)
                     } else {
                         // 乐观更新：先本地显示为已赞、计数+1；同步失败再回滚
-                        applyLikeState(item.id, liked = true)
-                        publishNostrReaction(item.id, item.nostrAuthorPubkey)
+                        applyLikeState(commentId, liked = true)
+                        publishNostrReaction(commentId, authorPubkey)
                     }
                 }
             }
