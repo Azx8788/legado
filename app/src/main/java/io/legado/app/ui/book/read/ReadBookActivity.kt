@@ -2115,6 +2115,10 @@ class ReadBookActivity : BaseReadBookActivity(),
             // 中继索引有延迟：本次仍拿不到刚发布的评论时用登记的下限兜底，
             // 别把「发布后还没索引到」的旧结果写进缓存，否则本次会话里气泡会丢。
             val counts = floorNostrReviewCounts(key, summary.counts)
+            AppLog.put(
+                "段评诊断 入缓存 key=$key 正计数=${counts.filterValues { it > 0 }}",
+                tag = "Nostr"
+            )
             val result = ReviewSummaryResult(counts, emptyMap())
             synchronized(nostrReviewSummaryCache) {
                 nostrReviewSummaryCache[key] = result
@@ -2435,6 +2439,10 @@ class ReadBookActivity : BaseReadBookActivity(),
         // 而 setReviewProviders / upContent 会更新排版列并刷新视图，必须在主线程执行，
         // 否则会抛出 CalledFromWrongThreadException(Only the original thread ... can touch its views)。
         runOnUiThread {
+            AppLog.put(
+                "段评诊断 上屏 正计数=${counts.filterValues { it > 0 }}",
+                tag = "Nostr"
+            )
             val columnsChanged = ChapterProvider.setReviewProviders(
                 countProvider = { targetChapterIndex, reviewId ->
                     when {
