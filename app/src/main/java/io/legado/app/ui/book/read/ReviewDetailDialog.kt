@@ -2,6 +2,7 @@ package io.legado.app.ui.book.read
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
 import android.view.MotionEvent
@@ -9,6 +10,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -120,6 +122,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private var pendingSignerAction: (() -> Unit)? = null
 
     private val expandedReplyParentKeys = HashSet<String>()
+    private var reviewSortMode = SORT_HOT
+    private var reviewSortHotView: TextView? = null
+    private var reviewSortNewView: TextView? = null
     private var reviewAudioPlayer: ExoPlayer? = null
     private var currentAudioUrl: String? = null
     private var isAudioPreparing = false
@@ -229,6 +234,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             }
             binding.toolBar.addView(countView, lp)
         }
+        addReviewSortToggle()
         addNostrCommentAction()
         binding.toolBar.setNavigationIcon(R.drawable.ic_baseline_close)
         binding.toolBar.navigationIcon?.setTint(getCompatColor(R.color.secondaryText))
@@ -255,6 +261,69 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             }
         })
         loadDetailPage(paragraphNum, 1, append = false)
+    }
+
+    /** 顶部「最热/最新」互斥胶囊：只改顶层展示顺序，不动 [detailItems] 自身顺序。 */
+    private fun addReviewSortToggle() {
+        binding.toolBar.findViewWithTag<View>("review_sort_toggle")?.let(binding.toolBar::removeView)
+        val context = requireContext()
+        val container = LinearLayout(context).apply {
+            tag = "review_sort_toggle"
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundResource(R.drawable.bg_review_sort_container)
+            setPadding(2.dpToPx(), 2.dpToPx(), 2.dpToPx(), 2.dpToPx())
+        }
+        val hotView = reviewSortChip(context, R.string.review_sort_hot) { switchReviewSort(SORT_HOT) }
+        val newView = reviewSortChip(context, R.string.review_sort_new) { switchReviewSort(SORT_NEW) }
+        container.addView(hotView)
+        container.addView(newView)
+        reviewSortHotView = hotView
+        reviewSortNewView = newView
+        val layoutParams = androidx.appcompat.widget.Toolbar.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.END or Gravity.CENTER_VERTICAL
+        ).apply {
+            marginStart = 8.dpToPx()
+            marginEnd = 8.dpToPx()
+        }
+        binding.toolBar.addView(container, layoutParams)
+        refreshReviewSortChips()
+    }
+
+    private fun reviewSortChip(context: Context, textRes: Int, onClick: () -> Unit): TextView =
+        TextView(context).apply {
+            setText(textRes)
+            textSize = 12f
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+            setPadding(10.dpToPx(), 4.dpToPx(), 10.dpToPx(), 4.dpToPx())
+            setOnClickListener { onClick() }
+        }
+
+    private fun switchReviewSort(mode: Int) {
+        if (reviewSortMode == mode) return
+        reviewSortMode = mode
+        refreshReviewSortChips()
+        renderUiItems()
+    }
+
+    private fun refreshReviewSortChips() {
+        listOf(
+            reviewSortHotView to SORT_HOT,
+            reviewSortNewView to SORT_NEW
+        ).forEach { (view, mode) ->
+            view ?: return@forEach
+            if (reviewSortMode == mode) {
+                view.setBackgroundResource(R.drawable.bg_review_sort_selected)
+                view.setTextColor(getCompatColor(R.color.primaryText))
+                view.setTypeface(null, Typeface.BOLD)
+            } else {
+                view.setBackgroundResource(0)
+                view.setTextColor(getCompatColor(R.color.secondaryText))
+                view.setTypeface(null, Typeface.NORMAL)
+            }
+        }
     }
 
     private fun addNostrCommentAction() {
@@ -331,6 +400,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             imageUrl = null,
             audioUrl = null,
             time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date()),
+            createdAt = System.currentTimeMillis() / 1000,
             likeCount = null,
             replyCount = null,
             replies = emptyList(),
@@ -453,6 +523,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             audioUrl = null,
             time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
                 .format(Date(event.optLong("created_at", System.currentTimeMillis() / 1000) * 1000)),
+            createdAt = event.optLong("created_at", System.currentTimeMillis() / 1000),
             likeCount = 0,
             likedByMe = false,
             myReactionId = null,
@@ -1403,9 +1474,24 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     }
 
     private fun renderUiItems() {
-        val uiItems = flattenItems(detailItems)
+        val uiItems = flattenItems(sortedDetailItems())
         adapter.setItems(uiItems, uiItemDiffCallback, skipDiff = true)
     }
+
+    /** 只排顶层展示顺序：[detailItems] 自身顺序被点赞回填与索引表依赖，不能动。 */
+    private fun sortedDetailItems(): List<ReviewDetailItem> = when (reviewSortMode) {
+        SORT_NEW -> detailItems.sortedWith(
+            compareByDescending<ReviewDetailItem> { it.createdAt ?: Long.MIN_VALUE }
+        )
+        else -> detailItems.sortedWith(
+            compareByDescending<ReviewDetailItem> { subtreeScore(it) }
+                .thenByDescending { it.createdAt ?: Long.MIN_VALUE }
+        )
+    }
+
+    /** 计分：自身点赞数 + 每级后代「1 条回复」及其子树计分。 */
+    private fun subtreeScore(item: ReviewDetailItem): Int =
+        (item.likeCount ?: 0) + item.replies.sumOf { 1 + subtreeScore(it) }
 
     private fun ReviewDetailItem.toUiItem(
         level: Int,
@@ -1439,6 +1525,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         private const val MAX_HEIGHT_RATIO = 0.92f
         const val TYPE_NORMAL = 0
         const val TYPE_MORE = 1
+        private const val SORT_HOT = 0
+        private const val SORT_NEW = 1
         private const val NOSTR_MORE_PAGE = "nostr-more"
         /** 段评最多展示的嵌套层级（1=主评论）；第 5 级不再显示回复按钮。 */
         private const val MAX_REPLY_LEVEL = 5

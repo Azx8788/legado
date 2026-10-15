@@ -1618,6 +1618,8 @@ Placeholders:
     <string name="review_like_count">Like %1$d</string>
     <string name="review_reply_count">Reply %1$d</string>
     <string name="review_total_count">Total %1$d comments</string>
+    <string name="review_sort_hot">Hot</string>
+    <string name="review_sort_new">New</string>
     <string name="review_more_replies">View more replies</string>
     <string name="review_collapse_replies">Collapse replies</string>
     <string name="review_play_audio">Play audio</string>

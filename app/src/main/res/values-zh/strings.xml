@@ -1564,6 +1564,8 @@ Cron 使用 5 个字段：**分 时 日 月 周**
     <string name="review_like_count">点赞 %1$d</string>
     <string name="review_reply_count">回复 %1$d</string>
     <string name="review_total_count">共%1$d条评论</string>
+    <string name="review_sort_hot">最热</string>
+    <string name="review_sort_new">最新</string>
     <string name="review_more_replies">查看更多回复</string>
     <string name="review_collapse_replies">收起回复</string>
     <string name="review_play_audio">播放语音</string>

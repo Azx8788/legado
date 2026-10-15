@@ -82,6 +82,7 @@ internal object NostrReviewDetailCache {
             imageUrl = null,
             audioUrl = null,
             time = time,
+            createdAt = createdAt,
             likeCount = likeCount,
             likedByMe = likedByMe,
             myReactionId = myReactionId,
@@ -112,6 +113,7 @@ internal object NostrReviewDetailCache {
         item.imageUrl?.let { put("image", it) }
         item.audioUrl?.let { put("audio", it) }
         item.time?.let { put("time", it) }
+        item.createdAt?.let { put("createdAt", it) }
         item.likeCount?.let { put("like", it) }
         if (item.likedByMe) put("liked", true)
         item.myReactionId?.let { put("myReaction", it) }
@@ -135,6 +137,7 @@ internal object NostrReviewDetailCache {
             imageUrl = json.optString("image").takeIf { it.isNotEmpty() },
             audioUrl = json.optString("audio").takeIf { it.isNotEmpty() },
             time = json.optString("time").takeIf { it.isNotEmpty() },
+            createdAt = if (json.has("createdAt")) json.optLong("createdAt") else null,
             likeCount = if (json.has("like")) json.optInt("like") else null,
             likedByMe = json.optBoolean("liked"),
             myReactionId = json.optString("myReaction").takeIf { it.isNotEmpty() },
