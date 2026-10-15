@@ -111,7 +111,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         }
 
     private val nostrSignerDialog by lazy {
-        NostrSignerDialogController(this, nostrExternalSignerConnect)
+        NostrSignerDialogController(this) { intent -> nostrExternalSignerConnect.launch(intent) }
     }
 
     /** 未登录时点击评论/回复/点赞暂存的待执行动作，连接成功后接续执行一次。 */
