@@ -203,20 +203,30 @@ object NostrReviewClient {
                 }
                 .toMap()
         }
-        val commentsByExcerpt = comments.groupBy { it.rootId }
         val excerptAuthors = matching.associate { it.id to it.pubkey }
+        // 建树以「本段全部评论」为上下文：回复的父评论可能属于同段的另一条摘录，
+        // 只按单条摘录分组会把这类回复当成孤儿丢掉，出现「计数有、列表无」。
         val roots = excerptIds.flatMap { excerptId ->
-            buildThread(
-                commentsByExcerpt[excerptId].orEmpty(),
-                excerptId,
-                excerptAuthors[excerptId].orEmpty()
-            )
-        }.sortedByDescending { it.createdAt }
+            buildThread(comments, excerptId, excerptAuthors[excerptId].orEmpty())
+        }
+        // 兜底：父评论不在本段评论集合里的（跨摘录/父事件取不到/深于层级上限）挂到顶层，
+        // 保证统计里数到的评论都能显示出来。
+        val reachableIds = HashSet<String>()
+        fun markReachable(list: List<NostrEvent>) {
+            list.forEach { event ->
+                reachableIds.add(event.id)
+                markReachable(event.children)
+            }
+        }
+        markReachable(roots)
+        val rescued = comments.filterNot { it.id in reachableIds }
+            .map { it.copy(children = emptyList()) }
+        val allRoots = (roots + rescued).sortedByDescending { it.createdAt }
         val pageSize = 20
-        val pageItems = roots.drop((page - 1).coerceAtLeast(0) * pageSize).take(pageSize)
+        val pageItems = allRoots.drop((page - 1).coerceAtLeast(0) * pageSize).take(pageSize)
         return Details(
             items = pageItems.map { it.toComment(likeCounts, likedIds, myReactionIds) },
-            hasMore = roots.size > page.coerceAtLeast(1) * pageSize
+            hasMore = allRoots.size > page.coerceAtLeast(1) * pageSize
         )
     }
 
