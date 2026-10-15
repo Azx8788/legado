@@ -3,6 +3,7 @@ package io.legado.app.ui.nostr
 import android.content.Intent
 import android.net.Uri
 import android.view.View
+import androidx.activity.result.ActivityResultLauncher
 import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
@@ -39,7 +40,7 @@ import splitties.init.appCtx
  */
 class NostrSignerDialogController(
     private val fragment: Fragment,
-    private val launchLocalSigner: (Intent) -> Unit,
+    private val launcher: ActivityResultLauncher<Intent>,
 ) {
 
     private var dialog: AlertDialog? = null
@@ -243,7 +244,7 @@ class NostrSignerDialogController(
             context.toastOnUi(context.getString(R.string.nostr_external_signer_not_installed))
             return
         }
-        launchLocalSigner(NostrNip55.buildGetPublicKeyIntent())
+        launcher.launch(NostrNip55.buildGetPublicKeyIntent())
     }
 
     /** 本机签名器已连接：断开（远程也已连接时可切换为当前使用）。 */

@@ -84,7 +84,7 @@ class OtherConfigFragment : PreferenceFragment(),
 
     /** 签名器连接弹窗：二维码配对 / 本机签名器（NIP-55） / bunker，与阅读页段评弹窗共用。 */
     private val nostrSignerDialog by lazy {
-        NostrSignerDialogController(this) { intent -> nostrExternalSignerConnect.launch(intent) }
+        NostrSignerDialogController(this, nostrExternalSignerConnect)
     }
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
