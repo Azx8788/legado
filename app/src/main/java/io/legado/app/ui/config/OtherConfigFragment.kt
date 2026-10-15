@@ -2,11 +2,13 @@ package io.legado.app.ui.config
 
 import android.annotation.SuppressLint
 import android.content.ComponentName
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.postDelayed
 import androidx.fragment.app.activityViewModels
@@ -77,7 +79,7 @@ class OtherConfigFragment : PreferenceFragment(),
     }
 
     /** NIP-55：本机签名器用 get_public_key 回包（公钥 + 包名）完成连接。 */
-    private val nostrExternalSignerConnect =
+    private val nostrExternalSignerConnect: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             nostrSignerDialog.onNip55Result(result.resultCode, result.data)
         }

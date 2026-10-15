@@ -1,6 +1,7 @@
 package io.legado.app.ui.book.read
 
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import android.view.Gravity
 import android.view.MotionEvent
@@ -9,6 +10,7 @@ import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.updateLayoutParams
@@ -105,7 +107,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private val localPendingPublish = HashMap<String, PublishArgs>()
 
     /** NIP-55：本机签名器用 get_public_key 回包。段评弹窗内也能直接发起本机签名器连接。 */
-    private val nostrExternalSignerConnect =
+    private val nostrExternalSignerConnect: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             nostrSignerDialog.onNip55Result(result.resultCode, result.data)
         }
