@@ -448,6 +448,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
      */
     private fun injectPendingReviewItems() {
         val key = pendingReviewKey() ?: return
+        // 进程重启后内存占位已丢：先从落盘草稿恢复，重开弹窗仍能看到草稿项并可点击重发。
+        NostrPendingReviews.hydrate(key)
         val topLevel = ArrayList<ReviewDetailItem>()
         NostrPendingReviews.list(key).forEach { entry ->
             if (findDetailItemById(entry.localId) != null) return@forEach
