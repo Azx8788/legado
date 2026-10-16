@@ -125,7 +125,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
 
     private val expandedReplyParentKeys = HashSet<String>()
     private var reviewSortMode = SORT_HOT
-    /** 顶层 id 的展示顺序，null 表示待重算；仅在切换排序/下拉刷新/发布成功时置空，其余时刻冻结。 */
+    /** 顶层条目的展示顺序（key 见 [buildDetailItemKey]），null 表示待重算；仅在切换排序/下拉刷新/发布成功时置空，其余时刻冻结。 */
     private var sortOrder: List<String>? = null
     private var reviewSortHotView: TextView? = null
     private var reviewSortNewView: TextView? = null
@@ -1498,7 +1498,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
 
     /**
      * 顶层展示顺序：[detailItems] 自身顺序被点赞回填与索引表依赖，不能动，这里只产出展示序列。
-     * 本地待发布占位始终在最前；其余按冻结的 [sortOrder] 重放，不在其中的新 id 追加到末尾。
+     * 本地待发布占位始终在最前；其余按冻结的 [sortOrder] 重放，不在其中的新条目追加到末尾。
+     * 顺序以 [buildDetailItemKey] 为准：书源条目未必有 id，只按 id 记序会让它们全部落到末尾。
      */
     private fun orderedTopLevel(): List<ReviewDetailItem> {
         val pending = detailItems.filter { it.pendingState != null }
@@ -1509,19 +1510,20 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         if (frozen == null) {
             // 空列表不锁定顺序，否则本次会话后续加入的条目会因顺序为空而不参与排序
             val computed = computeOrderedTopLevel().filter { it.pendingState == null }
-            if (computed.isNotEmpty()) sortOrder = computed.mapNotNull { it.id }
+            if (computed.isNotEmpty()) {
+                sortOrder = computed.map { buildDetailItemKey(it, isReply = false) }
+            }
             ordered.addAll(computed)
             return ordered
         }
-        val byId = rest.associateBy { it.id }
-        val emittedIds = HashSet<String>()
-        frozen.forEach { id ->
-            val item = byId[id] ?: return@forEach
-            if (emittedIds.add(id)) ordered.add(item)
+        val byKey = rest.associateBy { buildDetailItemKey(it, isReply = false) }
+        val emittedKeys = HashSet<String>()
+        frozen.forEach { key ->
+            val item = byKey[key] ?: return@forEach
+            if (emittedKeys.add(key)) ordered.add(item)
         }
         rest.forEach { item ->
-            val id = item.id
-            if (id == null || emittedIds.add(id)) ordered.add(item)
+            if (emittedKeys.add(buildDetailItemKey(item, isReply = false))) ordered.add(item)
         }
         return ordered
     }
