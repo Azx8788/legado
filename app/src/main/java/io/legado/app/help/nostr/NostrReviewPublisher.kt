@@ -8,7 +8,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,10 +22,13 @@ object NostrReviewPublisher {
      */
     private val publishScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** 外部签名器(如 NIP-46 远端)可能慢，超时按发布失败处理，让上层落到草稿态可重发。 */
+    private const val REVIEW_PUBLISH_TIMEOUT_MS = 60_000L
+
     /**
      * 与 UI 生命周期无关的发布：关弹窗/退回正文也不中断。
      * [block] 在 [publishScope] 内执行，成功把结果交给 [onSuccess]；
-     * 失败写一行日志并回调 [onFailure]，不吞异常；取消（进程结束）不当作业务失败。
+     * 失败或超时写一行日志并回调 [onFailure]，不吞异常；取消（进程结束）不当作业务失败。
      */
     fun <T> launchPublish(
         paragraphNum: Int,
@@ -32,7 +37,12 @@ object NostrReviewPublisher {
         onFailure: (Throwable) -> Unit = {}
     ): Job = publishScope.launch {
         val result = try {
-            block()
+            withTimeout(REVIEW_PUBLISH_TIMEOUT_MS) { block() }
+        } catch (e: TimeoutCancellationException) {
+            // withTimeout 抛的也是 CancellationException 子类，必须先于下面那条捕获才不会被当作进程级取消
+            AppLog.put("段评发布超时 p=$paragraphNum：${e.localizedMessage}", e, tag = "Nostr")
+            onFailure(e)
+            return@launch
         } catch (e: CancellationException) {
             // 进程级作用域只在进程结束时取消，此时已无发布/回写意义，直接结束
             throw e

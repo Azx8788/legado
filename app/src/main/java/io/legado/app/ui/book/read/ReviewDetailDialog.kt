@@ -48,6 +48,7 @@ import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.help.glide.ImageLoader
 import io.legado.app.help.config.AppConfig
+import io.legado.app.help.nostr.NostrPendingReviews
 import io.legado.app.help.nostr.NostrProfileStore
 import io.legado.app.help.nostr.NostrReviewClient
 import io.legado.app.help.nostr.NostrReviewDetailCache
@@ -107,8 +108,6 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private var nextPageUrl: String? = null
     private val mainItemIndexByKey = LinkedHashMap<String, Int>()
     private val detailItems = ArrayList<ReviewDetailItem>()
-    /** 本地占位项的发布参数，用于草稿态直接重发；成功移除占位时清理。 */
-    private val localPendingPublish = HashMap<String, PublishArgs>()
 
     /** NIP-55：本机签名器用 get_public_key 回包。段评弹窗内也能直接发起本机签名器连接。 */
     private val nostrExternalSignerConnect: ActivityResultLauncher<Intent> =
@@ -390,15 +389,22 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         }
     }
 
-    /**
-     * 乐观插入一条本地占位评论：首评加到列表顶部，回复挂到父评论 replies 末尾。
-     * 返回占位 id，发布成功后据此移除、失败后据此转草稿态。
-     */
-    private fun insertLocalPendingItem(text: String, replyTo: ReviewDetailItem?): String {
+    /** 本段在应用级待发布存储里的 key；书未打开时无从定位。 */
+    private fun pendingReviewKey(): String? {
+        val book = ReadBook.book ?: return null
+        return NostrPendingReviews.keyOf(book.bookUrl, ReadBook.durChapterIndex, paragraphNum)
+    }
+
+    /** 本地占位条目：展示字段与真实条目一致，仅 id 是 local: 前缀、带发布态。 */
+    private fun buildPendingItem(
+        localId: String,
+        text: String,
+        createdAtMs: Long,
+        pendingState: String = PENDING_SENDING
+    ): ReviewDetailItem {
         val pubkey = NostrSigners.currentPubkey()?.takeIf { it.isNotBlank() }
         val profile = pubkey?.let { NostrProfileStore.get(it) }
-        val localId = "local:" + UUID.randomUUID()
-        val pending = ReviewDetailItem(
+        return ReviewDetailItem(
             id = localId,
             avatar = profile?.picture,
             name = profile?.bestName ?: pubkey?.take(12) ?: getString(R.string.nostr_comment_me),
@@ -407,13 +413,22 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             content = text,
             imageUrl = null,
             audioUrl = null,
-            time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date()),
-            createdAt = System.currentTimeMillis() / 1000,
+            time = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(createdAtMs)),
+            createdAt = createdAtMs / 1000,
             likeCount = null,
             replyCount = null,
             replies = emptyList(),
-            pendingState = PENDING_SENDING
+            pendingState = pendingState
         )
+    }
+
+    /**
+     * 乐观插入一条本地占位评论：首评加到列表顶部，回复挂到父评论 replies 末尾。
+     * 返回占位 id，发布成功后据此移除、失败后据此转草稿态。
+     */
+    private fun insertLocalPendingItem(text: String, replyTo: ReviewDetailItem?): String {
+        val localId = "local:" + UUID.randomUUID()
+        val pending = buildPendingItem(localId, text, System.currentTimeMillis())
         val parentId = replyTo?.id?.takeIf { it.isNotBlank() }
         if (parentId != null && appendReplyToItem(parentId, pending)) {
             findTopLevelParentKey(parentId)?.let { expandedReplyParentKeys.add(it) }
@@ -424,6 +439,39 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         binding.tvMsg.gone()
         renderUiItems()
         return localId
+    }
+
+    /**
+     * 把本段仍在途/失败的发布占位补进列表，供重开弹窗时恢复发送中/草稿态；
+     * 已存在于 detailItems 的（本次会话刚插入，或已确认并与真实评论共存）不重复注入。
+     * 父项不在列表时回复退化为顶层占位，确保内容不会因父项缺页而消失。
+     */
+    private fun injectPendingReviewItems() {
+        val key = pendingReviewKey() ?: return
+        val topLevel = ArrayList<ReviewDetailItem>()
+        NostrPendingReviews.list(key).forEach { entry ->
+            if (findDetailItemById(entry.localId) != null) return@forEach
+            val pendingState = if (entry.state == NostrPendingReviews.STATE_DRAFT) {
+                PENDING_FAILED
+            } else {
+                PENDING_SENDING
+            }
+            val pending = buildPendingItem(
+                localId = entry.localId,
+                text = entry.text,
+                createdAtMs = entry.createdAtMs,
+                pendingState = pendingState
+            )
+            val parentId = entry.parentId
+            if (parentId != null && appendReplyToItem(parentId, pending)) {
+                findTopLevelParentKey(parentId)?.let { expandedReplyParentKeys.add(it) }
+            } else {
+                topLevel.add(pending)
+            }
+        }
+        if (topLevel.isEmpty()) return
+        detailItems.addAll(0, topLevel)
+        reindexMainItems()
     }
 
     /** 把占位回复挂到 targetId 评论的 replies 末尾(递归查找，含嵌套)；返回是否找到父项。 */
@@ -585,7 +633,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
 
     /** 按 id 递归移除本地占位项。 */
     private fun removeLocalPendingItem(localId: String) {
-        localPendingPublish.remove(localId)
+        NostrPendingReviews.remove(localId)
         val topIndex = detailItems.indexOfFirst { it.id == localId }
         if (topIndex >= 0) {
             detailItems.removeAt(topIndex)
@@ -655,10 +703,11 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private fun republishLocalPending(item: ReviewUiItem) {
         val localId = item.id?.takeIf { it.isNotBlank() } ?: return
         if (item.pendingState != PENDING_FAILED) return
-        val args = localPendingPublish[localId] ?: return
+        val entry = NostrPendingReviews.get(localId) ?: return
+        NostrPendingReviews.markSending(localId)
         setPendingState(localId, PENDING_SENDING)
-        val draftKey = if (args.parentId != null) {
-            reviewDraftKey("reply", args.parentId)
+        val draftKey = if (entry.parentId != null) {
+            reviewDraftKey("reply", entry.parentId)
         } else {
             reviewDraftKey("comment")
         }
@@ -670,15 +719,15 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 AppLog.put("段评重发开始 p=$paragraphNum id=$localId", tag = "Nostr")
                 val book = ReadBook.book ?: error("No book is open")
                 withContext(IO) {
-                    val parentId = args.parentId
+                    val parentId = entry.parentId
                     if (parentId != null) {
                         NostrReviewPublisher.replyToComment(
                             book = book,
-                            rootExcerptId = args.rootId.orEmpty(),
-                            rootExcerptPubkey = args.rootAuthor.orEmpty(),
+                            rootExcerptId = entry.rootId.orEmpty(),
+                            rootExcerptPubkey = entry.rootAuthor.orEmpty(),
                             parentCommentId = parentId,
-                            parentAuthorPubkey = args.parentAuthor.orEmpty(),
-                            content = args.text
+                            parentAuthorPubkey = entry.parentAuthor.orEmpty(),
+                            content = entry.text
                         )
                     } else {
                         val chapterIndex = ReadBook.durChapterIndex
@@ -692,7 +741,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             chapterTitle = chapter.title,
                             paragraphs = textChapter.paragraphTexts,
                             paragraphIndex = paragraphNum,
-                            comment = args.text
+                            comment = entry.text
                         )
                     }
                 }
@@ -702,11 +751,12 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 // 清草稿与弹窗无关，弹窗已关也要执行；统计已在点击时乐观 +1，成功后不再重复计入。
                 clearReviewDraft(draftKey)
                 // 重发成功立刻入缓存/上屏，不必等联网回读。
-                val confirmed = confirmPublishedComment(published, args.text)
-                cachePublishedComment(parentId = args.parentId, item = confirmed)
+                val confirmed = confirmPublishedComment(published, entry.text)
+                cachePublishedComment(parentId = entry.parentId, item = confirmed)
+                NostrPendingReviews.remove(localId)
                 runOnUiIfAlive {
                     removeLocalPendingItem(localId)
-                    val parentId = args.parentId
+                    val parentId = entry.parentId
                     if (parentId != null) {
                         appendReplyToItem(parentId, confirmed)
                     } else {
@@ -721,7 +771,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             onFailure = { cause ->
                 AppLog.put("段评发布失败 id=$localId：${cause.localizedMessage}", cause, tag = "Nostr")
                 // 失败必落草稿态：草稿落盘与弹窗无关，先存；占位转草稿态仅在弹窗存活时做
-                saveReviewDraft(draftKey, args.text)
+                saveReviewDraft(draftKey, entry.text)
+                NostrPendingReviews.markDraft(localId)
                 // 失败后把气泡回退到真实值。
                 postEvent(EventBus.REFRESH_REVIEW_SUMMARY_ONLY, paragraphNum.toString())
                 runOnUiIfAlive {
@@ -788,7 +839,11 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 if (comment.isBlank()) return@setOnClickListener
                 positive.isEnabled = false
                 val localId = insertLocalPendingItem(comment, null)
-                localPendingPublish[localId] = PublishArgs(text = comment)
+                pendingReviewKey()?.let { key ->
+                    NostrPendingReviews.add(
+                        NostrPendingReviews.Entry(localId = localId, key = key, text = comment)
+                    )
+                }
                 dialog.dismiss()
                 // 乐观上屏：点击瞬间就让正文气泡 +1，不必等中继接收事件；失败时再回退。
                 postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
@@ -820,6 +875,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         // 已确认评论立刻入缓存/上屏：弹窗已关也写缓存，重开该段不必等联网。
                         val confirmed = confirmPublishedComment(published, comment)
                         cachePublishedComment(parentId = null, item = confirmed)
+                        NostrPendingReviews.remove(localId)
                         runOnUiIfAlive {
                             removeLocalPendingItem(localId)
                             detailItems.add(0, confirmed)
@@ -834,6 +890,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         // 失败必落草稿态：弹窗已关闭也要把草稿存下，下次打开发布框自动回填；
                         // 占位转草稿态仅在弹窗存活时做
                         saveReviewDraft(draftKey, comment)
+                        NostrPendingReviews.markDraft(localId)
                         // 失败后把气泡回退到真实值（点击时已乐观 +1，未落地就不该计）。
                         postEvent(EventBus.REFRESH_REVIEW_SUMMARY_ONLY, paragraphNum.toString())
                         runOnUiIfAlive {
@@ -1019,9 +1076,12 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 )
             }
             if (!cached.isNullOrEmpty()) {
-                // 命中缓存：先渲染缓存并收起加载指示
-                binding.rotateLoading.gone()
                 mergeDetailItems(cached)
+            }
+            // 缓存并入后父项才就位，此时补入待发布占位：回复能挂到父项，否则退化为顶层
+            injectPendingReviewItems()
+            if (detailItems.isNotEmpty()) {
+                binding.rotateLoading.gone()
                 renderUiItems()
             }
         }
@@ -1148,7 +1208,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                     hasMore = false
                 }
             }
-            if (items.isEmpty() && !append) {
+            if (items.isEmpty() && !append && detailItems.isEmpty()) {
                 hasMore = false
                 binding.tvMsg.text = getString(R.string.content_empty)
                 binding.tvMsg.visible()
@@ -1278,15 +1338,6 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         val items: List<ReviewDetailItem>,
         val nextPageUrl: String?,
         val hasNextPageRule: Boolean
-    )
-
-    /** 本地占位的发布参数：parentId 为空即首评，否则为回复。 */
-    private data class PublishArgs(
-        val text: String,
-        val parentId: String? = null,
-        val parentAuthor: String? = null,
-        val rootId: String? = null,
-        val rootAuthor: String? = null
     )
 
     /**
@@ -2066,13 +2117,19 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                     if (content.isBlank()) return@setOnClickListener
                     positive.isEnabled = false
                     val localId = insertLocalPendingItem(content, findDetailItemById(parentId))
-                    localPendingPublish[localId] = PublishArgs(
-                        text = content,
-                        parentId = parentId,
-                        parentAuthor = parentAuthor,
-                        rootId = rootId,
-                        rootAuthor = rootAuthor
-                    )
+                    pendingReviewKey()?.let { key ->
+                        NostrPendingReviews.add(
+                            NostrPendingReviews.Entry(
+                                localId = localId,
+                                key = key,
+                                text = content,
+                                parentId = parentId,
+                                parentAuthor = parentAuthor,
+                                rootId = rootId,
+                                rootAuthor = rootAuthor
+                            )
+                        )
+                    }
                     dialog.dismiss()
                     // 乐观上屏：回复也挂在段落下的根摘录，气泡同样 +1。
                     postEvent(EventBus.REFRESH_REVIEW_SUMMARY, paragraphNum.toString())
@@ -2099,6 +2156,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             // 已确认回复立刻入缓存/上屏（挂在父评论下），重开该段不必等联网。
                             val confirmed = confirmPublishedComment(published, content)
                             cachePublishedComment(parentId = parentId, item = confirmed)
+                            NostrPendingReviews.remove(localId)
                             runOnUiIfAlive {
                                 removeLocalPendingItem(localId)
                                 appendReplyToItem(parentId, confirmed)
@@ -2112,6 +2170,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             // 失败必落草稿态：弹窗已关闭也要把草稿存下，下次打开发布框自动回填；
                             // 占位转草稿态仅在弹窗存活时做
                             saveReviewDraft(draftKey, content)
+                            NostrPendingReviews.markDraft(localId)
                             // 失败后把气泡回退到真实值。
                             postEvent(EventBus.REFRESH_REVIEW_SUMMARY_ONLY, paragraphNum.toString())
                             runOnUiIfAlive {
