@@ -48,7 +48,12 @@ object NostrReviewClient {
     data class Summary(
         val counts: Map<Int, Int>,
         /** 属于本章但未能定位到段落的摘录，其顶层评论；供章末汇总展示。 */
-        val unlocated: List<Comment> = emptyList()
+        val unlocated: List<Comment> = emptyList(),
+        /**
+         * 中继全部不可用（如断网）导致摘录查询失败。此时 [counts] 只是「首评占位」的空段统计，
+         * 不代表真实数据；调用方不得用它覆盖已缓存统计。
+         */
+        val relayFailed: Boolean = false
     )
 
     data class Comment(
@@ -81,6 +86,7 @@ object NostrReviewClient {
         val bookTags = bookIdentifiers(book.name, book.author)
         // 中继全部不可用时降级为「暂无摘录」:已登录用户仍能看到可首评的占位图标,
         // 而不是因为查询异常整章都没有段评入口(发布时的中继错误会单独提示)。
+        var relayFailed = false
         val excerpts = runCatching {
             queryEvents(
                 JSONObject()
@@ -90,6 +96,7 @@ object NostrReviewClient {
             )
         }.onFailure {
             if (it is CancellationException) throw it
+            relayFailed = true
             AppLog.put("查询 Nostr 段落摘录失败\n${it.localizedMessage}", it, tag = "Nostr")
         }.getOrDefault(emptyList())
         val matched = matchParagraphs(excerpts, paragraphs, chapterTitle)
@@ -103,7 +110,7 @@ object NostrReviewClient {
             } else {
                 emptyMap()
             }
-            return Summary(writableParagraphs, unlocated)
+            return Summary(writableParagraphs, unlocated, relayFailed)
         }
 
         val comments = queryComments(excerptIds)
@@ -116,12 +123,12 @@ object NostrReviewClient {
                 else -> null
             }
         }.toMap()
-        if (!allowCreatingComments) return Summary(counts, unlocated)
+        if (!allowCreatingComments) return Summary(counts, unlocated, relayFailed)
         val visibleCounts = counts.toMutableMap()
         paragraphs.forEachIndexed { index, paragraph ->
             if (paragraph.isNotBlank()) visibleCounts.putIfAbsent(index + 1, -1)
         }
-        return Summary(visibleCounts, unlocated)
+        return Summary(visibleCounts, unlocated, relayFailed)
     }
 
     /** 属于本章（context 含本章标题）但没匹配到任何段落的摘录。 */

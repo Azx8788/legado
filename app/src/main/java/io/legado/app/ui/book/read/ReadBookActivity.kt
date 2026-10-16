@@ -2116,6 +2116,22 @@ class ReadBookActivity : BaseReadBookActivity(),
             if (summary == null || !AppConfig.nostrReviewEnabled) return@onSuccess
             val currentBook = ReadBook.book ?: return@onSuccess
             if (buildReviewSummaryKey(currentBook, ReadBook.durChapterIndex) != key) return@onSuccess
+            // 断网等导致中继全不可用：此时 counts 只是「首评占位」的空段统计，不能用来覆盖已缓存结果，
+            // 否则离线时缓存的气泡会整章消失。已有缓存则保留缓存；无缓存才退回占位（且不落盘）。
+            if (summary.relayFailed) {
+                val existing = synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] }
+                if (existing == null) {
+                    val degraded = ReviewSummaryResult(summary.counts, emptyMap())
+                    synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = degraded }
+                }
+                applyReviewSummary(
+                    key,
+                    chapterIndex,
+                    synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
+                        ?: ReviewSummaryResult(emptyMap(), emptyMap())
+                )
+                return@onSuccess
+            }
             // 中继索引有延迟：本次仍拿不到刚发布的评论时用登记的下限兜底，
             // 别把「发布后还没索引到」的旧结果写进缓存，否则本次会话里气泡会丢。
             val counts = floorNostrReviewCounts(key, summary.counts)
@@ -2179,6 +2195,8 @@ class ReadBookActivity : BaseReadBookActivity(),
                 reviewSummaryPrefetchingKeys.remove(key)
             }
             if (summary == null || !AppConfig.nostrReviewEnabled) return@onSuccess
+            // 中继不可用（如断网）不写缓存，避免把空段占位当成下一章统计落盘。
+            if (summary.relayFailed) return@onSuccess
             val result = ReviewSummaryResult(summary.counts, emptyMap())
             synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = result }
             writeDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key, result)
