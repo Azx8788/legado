@@ -31,7 +31,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
+import java.util.Collections
 import java.util.Date
+import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.UUID
 import io.legado.app.R
@@ -123,6 +125,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
 
     private val expandedReplyParentKeys = HashSet<String>()
     private var reviewSortMode = SORT_HOT
+    /** 顶层 id 的展示顺序，null 表示待重算；仅在切换排序/下拉刷新/发布成功时置空，其余时刻冻结。 */
+    private var sortOrder: List<String>? = null
     private var reviewSortHotView: TextView? = null
     private var reviewSortNewView: TextView? = null
     private var reviewAudioPlayer: ExoPlayer? = null
@@ -228,9 +232,9 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             val lp = androidx.appcompat.widget.Toolbar.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.END or Gravity.CENTER_VERTICAL
+                Gravity.START or Gravity.CENTER_VERTICAL
             ).apply {
-                marginEnd = 8.dpToPx()
+                marginStart = 4.dpToPx()
             }
             binding.toolBar.addView(countView, lp)
         }
@@ -260,6 +264,12 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 }
             }
         })
+        binding.swipeRefresh.isEnabled = true
+        binding.swipeRefresh.setColorSchemeResources(R.color.accent)
+        binding.swipeRefresh.setOnRefreshListener {
+            sortOrder = null
+            loadDetailPage(paragraphNum, 1, append = false)
+        }
         loadDetailPage(paragraphNum, 1, append = false)
     }
 
@@ -304,6 +314,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private fun switchReviewSort(mode: Int) {
         if (reviewSortMode == mode) return
         reviewSortMode = mode
+        sortOrder = null
         refreshReviewSortChips()
         renderUiItems()
     }
@@ -329,9 +340,6 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     private fun addNostrCommentAction() {
         if (!AppConfig.nostrReviewEnabled) return
         binding.toolBar.findViewWithTag<View>("nostr_comment_action")?.let(binding.toolBar::removeView)
-        binding.toolBar.findViewWithTag<View>("review_count_tag")?.let {
-            (it.layoutParams as? androidx.appcompat.widget.Toolbar.LayoutParams)?.marginEnd = 48.dpToPx()
-        }
         val action = AppCompatImageButton(requireContext()).apply {
             tag = "nostr_comment_action"
             setImageResource(R.drawable.ic_edit)
@@ -705,6 +713,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         detailItems.add(0, confirmed)
                         reindexMainItems()
                     }
+                    sortOrder = null
                     renderUiItems()
                     loadDetailPage(paragraphNum, 1, append = false)
                 }
@@ -815,6 +824,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             removeLocalPendingItem(localId)
                             detailItems.add(0, confirmed)
                             reindexMainItems()
+                            sortOrder = null
                             renderUiItems()
                             loadDetailPage(paragraphNum, 1, append = false)
                         }
@@ -987,7 +997,10 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     }
 
     private fun loadDetailPage(paragraphNum: Int, page: Int, append: Boolean) {
-        if (isLoading) return
+        if (isLoading) {
+            binding.swipeRefresh.isRefreshing = false
+            return
+        }
         if (!append) {
             // 初始加载先亮加载指示：未命中缓存时它要一直亮到联网结果回来，避免列表空白无反馈。
             binding.rotateLoading.visible()
@@ -1140,17 +1153,20 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 binding.tvMsg.text = getString(R.string.content_empty)
                 binding.tvMsg.visible()
                 isLoading = false
+                binding.swipeRefresh.isRefreshing = false
                 return@onSuccess
             }
             if (items.isEmpty()) {
                 hasMore = false
                 isLoading = false
+                binding.swipeRefresh.isRefreshing = false
                 return@onSuccess
             }
             val mergedCount = mergeDetailItems(items)
             if (mergedCount == 0 && append) {
                 hasMore = false
                 isLoading = false
+                binding.swipeRefresh.isRefreshing = false
                 return@onSuccess
             }
             currentPage = page
@@ -1166,8 +1182,10 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 }
             }
             isLoading = false
+            binding.swipeRefresh.isRefreshing = false
         }.onError {
             isLoading = false
+            binding.swipeRefresh.isRefreshing = false
             if (!append) {
                 binding.rotateLoading.gone()
                 binding.tvMsg.text = it.localizedMessage ?: getString(R.string.content_empty)
@@ -1474,19 +1492,74 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     }
 
     private fun renderUiItems() {
-        val uiItems = flattenItems(sortedDetailItems())
+        val uiItems = flattenItems(orderedTopLevel())
         adapter.setItems(uiItems, uiItemDiffCallback, skipDiff = true)
     }
 
-    /** 只排顶层展示顺序：[detailItems] 自身顺序被点赞回填与索引表依赖，不能动。 */
-    private fun sortedDetailItems(): List<ReviewDetailItem> = when (reviewSortMode) {
-        SORT_NEW -> detailItems.sortedWith(
+    /**
+     * 顶层展示顺序：[detailItems] 自身顺序被点赞回填与索引表依赖，不能动，这里只产出展示序列。
+     * 本地待发布占位始终在最前；其余按冻结的 [sortOrder] 重放，不在其中的新 id 追加到末尾。
+     */
+    private fun orderedTopLevel(): List<ReviewDetailItem> {
+        val pending = detailItems.filter { it.pendingState != null }
+        val ordered = ArrayList<ReviewDetailItem>(detailItems.size)
+        ordered.addAll(pending)
+        val rest = detailItems.filter { it.pendingState == null }
+        val frozen = sortOrder
+        if (frozen == null) {
+            // 空列表不锁定顺序，否则本次会话后续加入的条目会因顺序为空而不参与排序
+            val computed = computeOrderedTopLevel().filter { it.pendingState == null }
+            if (computed.isNotEmpty()) sortOrder = computed.mapNotNull { it.id }
+            ordered.addAll(computed)
+            return ordered
+        }
+        val byId = rest.associateBy { it.id }
+        val emittedIds = HashSet<String>()
+        frozen.forEach { id ->
+            val item = byId[id] ?: return@forEach
+            if (emittedIds.add(id)) ordered.add(item)
+        }
+        rest.forEach { item ->
+            val id = item.id
+            if (id == null || emittedIds.add(id)) ordered.add(item)
+        }
+        return ordered
+    }
+
+    /**
+     * 最热：hot(计分降序) 与 fresh(时间降序) 每轮各取 3 条交替拼接；
+     * 最新：纯按时间降序。
+     */
+    private fun computeOrderedTopLevel(): List<ReviewDetailItem> {
+        val fresh = detailItems.sortedWith(
             compareByDescending<ReviewDetailItem> { it.createdAt ?: Long.MIN_VALUE }
         )
-        else -> detailItems.sortedWith(
+        if (reviewSortMode == SORT_NEW) return fresh
+        val hot = detailItems.sortedWith(
             compareByDescending<ReviewDetailItem> { subtreeScore(it) }
                 .thenByDescending { it.createdAt ?: Long.MIN_VALUE }
         )
+        // hot/fresh 是同一批对象的两份排序，按对象去重；id 重复/缺失都落在这一步。
+        val usedItems = Collections.newSetFromMap(
+            IdentityHashMap<ReviewDetailItem, Boolean>()
+        )
+        val result = ArrayList<ReviewDetailItem>(detailItems.size)
+        val sources = arrayOf(ArrayDeque(hot), ArrayDeque(fresh))
+        var turn = 0
+        while (result.size < detailItems.size &&
+            (sources[0].isNotEmpty() || sources[1].isNotEmpty())
+        ) {
+            val queue = sources[turn % 2]
+            var taken = 0
+            while (queue.isNotEmpty() && taken < SORT_BATCH_SIZE) {
+                val item = queue.removeFirst()
+                if (!usedItems.add(item)) continue
+                result.add(item)
+                taken++
+            }
+            turn++
+        }
+        return result
     }
 
     /** 计分：自身点赞数 + 每级后代「1 条回复」及其子树计分。 */
@@ -1527,6 +1600,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         const val TYPE_MORE = 1
         private const val SORT_HOT = 0
         private const val SORT_NEW = 1
+        private const val SORT_BATCH_SIZE = 3
         private const val NOSTR_MORE_PAGE = "nostr-more"
         /** 段评最多展示的嵌套层级（1=主评论）；第 5 级不再显示回复按钮。 */
         private const val MAX_REPLY_LEVEL = 5
@@ -2026,6 +2100,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             runOnUiIfAlive {
                                 removeLocalPendingItem(localId)
                                 appendReplyToItem(parentId, confirmed)
+                                sortOrder = null
                                 renderUiItems()
                                 loadDetailPage(paragraphNum, 1, append = false)
                             }
