@@ -185,8 +185,8 @@ import io.legado.app.data.entities.migrateTo
 import io.legado.app.data.entities.save
 
 /** 段评发布后两次递进回查统计的延迟：中继写入/索引有延迟，太早回查会把乐观 +1 覆盖掉。 */
-private const val REVIEW_SUMMARY_REFRESH_DELAY_MS = 2_500L
-private const val REVIEW_SUMMARY_REFRESH_DELAY2_MS = 6_000L
+private const val REVIEW_SUMMARY_REFRESH_DELAY_MS = 5_000L
+private const val REVIEW_SUMMARY_REFRESH_DELAY2_MS = 20_000L
 
 /**
  * 本地计数下限的保护窗口上限：中继写入/索引延迟实测 ~10s（个别更久），8s 会在中继索引到之前
