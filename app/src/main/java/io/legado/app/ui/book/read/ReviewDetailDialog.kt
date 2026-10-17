@@ -69,6 +69,7 @@ import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.isDataUrl
 import io.legado.app.utils.getCompatColor
 import io.legado.app.utils.postEvent
+import io.legado.app.utils.longToastOnUi
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.visible
 import io.legado.app.utils.viewbindingdelegate.viewBinding
@@ -779,7 +780,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 postEvent(EventBus.REFRESH_REVIEW_SUMMARY_ONLY, paragraphNum.toString())
                 runOnUiIfAlive {
                     setPendingState(localId, PENDING_FAILED)
-                    context?.toastOnUi(
+                    context?.longToastOnUi(
                         cause.localizedMessage ?: getString(R.string.nostr_comment_failed)
                     )
                 }
@@ -897,7 +898,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         postEvent(EventBus.REFRESH_REVIEW_SUMMARY_ONLY, paragraphNum.toString())
                         runOnUiIfAlive {
                             setPendingState(localId, PENDING_FAILED)
-                            context?.toastOnUi(
+                            context?.longToastOnUi(
                                 cause.localizedMessage ?: getString(R.string.nostr_comment_failed)
                             )
                         }
@@ -2177,7 +2178,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             postEvent(EventBus.REFRESH_REVIEW_SUMMARY_ONLY, paragraphNum.toString())
                             runOnUiIfAlive {
                                 setPendingState(localId, PENDING_FAILED)
-                                context?.toastOnUi(
+                                context?.longToastOnUi(
                                     cause.localizedMessage ?: getString(R.string.nostr_comment_failed)
                                 )
                             }
