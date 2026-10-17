@@ -217,7 +217,10 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
         var handled = false
         touch(x, y) { _, _, _, textLine, column ->
             if (column is ReviewColumn) {
-                callBack.onReviewClick(resolveReviewId(textLine), column.count)
+                callBack.onReviewClick(
+                    if (column.reviewId != 0) column.reviewId else resolveReviewId(textLine),
+                    column.count
+                )
                 handled = true
             }
         }
@@ -262,7 +265,7 @@ class ContentTextView(context: Context, attrs: AttributeSet?) : View(context, at
                 }
 
                 is ReviewColumn -> {
-                    val reviewId = resolveReviewId(textLine)
+                    val reviewId = if (column.reviewId != 0) column.reviewId else resolveReviewId(textLine)
                     callBack.onReviewClick(reviewId, column.count)
                     handled = true
                 }

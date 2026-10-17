@@ -12,7 +12,6 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.book.BookContent
 import io.legado.app.help.book.BookHelp
 import io.legado.app.help.book.getBookSource
-import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.model.ImageProvider
@@ -323,9 +322,6 @@ class TextChapterLayout(
             )
             stringBuilder.append("\n")
         }
-        if (contents.isNotEmpty() && AppConfig.nostrReviewEnabled) {
-            appendChapterEndReviewLine(book, imageStyle)
-        }
         val textPage = pendingTextPage
         val endPadding = 20.dpToPx()
         val durYPadding = durY + endPadding
@@ -450,30 +446,6 @@ class TextChapterLayout(
             pendingTextPage.addLine(textLine)
         }
         durY += textHeight * paragraphSpacing / 10f
-    }
-
-    /**
-     * 预留一条章末行承载「未定位段评」气泡：段评到达后由 refreshReviewColumns 自动补挂，
-     * 故不依赖重排。该行用保留的 reviewId，无未定位时 refreshReviewColumns 不会着气泡。
-     */
-    private suspend fun appendChapterEndReviewLine(book: Book, imageStyle: String?) {
-        val lineCountBefore = pendingTextPage.lines.size
-        setTypeText(
-            book,
-            ChapterProvider.REVIEW_END_MARKER,
-            contentPaint,
-            contentPaintTextHeight,
-            contentPaintFontMetrics,
-            imageStyle,
-            isTitle = false
-        )
-        if (pendingTextPage.lines.size == lineCountBefore) return
-        val line = pendingTextPage.lines.last()
-        line.paragraphNum = ChapterProvider.REVIEW_ID_CHAPTER_END
-        line.reviewTitleOffset = 0
-        line.isParagraphEnd = true
-        line.removeColumns { it is ReviewColumn }
-        stringBuilder.append("\n")
     }
 
     /**

@@ -206,9 +206,6 @@ object ChapterProvider {
     /** 章末「未定位段评」入口的保留 reviewId；与真实段落号（从 1 起）不冲突。 */
     const val REVIEW_ID_CHAPTER_END = 1_000_000_000
 
-    /** 章末入口的占位文本：一条仅用于承载气泡的空白行（无未定位时不着气泡）。 */
-    const val REVIEW_END_MARKER = "\u3000"
-
     init {
         upStyle()
     }
@@ -1071,6 +1068,7 @@ object ChapterProvider {
     private fun refreshReviewColumns(textChapter: TextChapter?): Boolean {
         textChapter ?: return false
         val chapterIndex = textChapter.chapter.index
+        val endParagraphNum = findChapterEndParagraphNum(textChapter)
         var anyChanged = false
         var pageIndex = 0
         while (pageIndex < textChapter.pageSize) {
@@ -1086,33 +1084,20 @@ object ChapterProvider {
                     titleOffset = line.reviewTitleOffset,
                     chapterIndex = chapterIndex
                 )
-                var changed = false
+                // 期望的段评气泡：本段气泡 reviewId 用 0 表示「未显式指定」，点击时回退用行号计算。
+                val desired = mutableListOf<Pair<Int, Int>>()
                 // count == -1 是选中空段落时的临时气泡；0 才完全无段评。
-                val shouldShow = count != 0 && line.isParagraphEnd
-                if (!shouldShow) {
-                    if (line.removeColumns { it is ReviewColumn }) {
-                        changed = true
-                    }
-                } else {
-                    var hasReviewColumn = false
-                    line.columns.forEach { column ->
-                        if (column is ReviewColumn) {
-                            hasReviewColumn = true
-                            if (column.count != count) {
-                                column.count = count
-                                changed = true
-                            }
-                            if (updateReviewColumnLayout(column, line)) {
-                                changed = true
-                            }
-                        }
-                    }
-                    if (!hasReviewColumn) {
-                        appendReviewColumnIfNeeded(line, chapterIndex = chapterIndex)
-                        changed = true
+                if (count != 0 && line.isParagraphEnd) {
+                    desired.add(0 to count)
+                }
+                // 未定位气泡只挂在最后一段末行，且确有未定位评论时才有；否则章末不显示任何章评气泡。
+                if (!line.isTitle && line.isParagraphEnd && line.paragraphNum == endParagraphNum) {
+                    val unlocated = reviewCountProvider?.invoke(chapterIndex, REVIEW_ID_CHAPTER_END) ?: 0
+                    if (unlocated > 0) {
+                        desired.add(REVIEW_ID_CHAPTER_END to unlocated)
                     }
                 }
-                if (changed) {
+                if (syncReviewColumns(line, desired)) {
                     line.invalidate()
                     anyChanged = true
                 }
@@ -1183,15 +1168,60 @@ object ChapterProvider {
         // count == -1 是选中空段落时的临时气泡，也要显示出来。
         if (count == 0) return
         val reviewColumn = ReviewColumn(start = 0f, end = 0f, count = count)
-        updateReviewColumnLayout(reviewColumn, textLine)
         textLine.addColumn(reviewColumn)
+        layoutReviewColumns(textLine)
     }
 
     private fun getReviewScaleFactor(): Float {
         return ReadBookConfig.reviewIconScale.coerceIn(50, 200) / 100f
     }
 
-    private fun getReviewColumnRange(textLine: TextLine): Pair<Float, Float> {
+    /** 找本章正文最后一段的段落号（无正文时返回 0，不会匹配任何段落）。 */
+    private fun findChapterEndParagraphNum(textChapter: TextChapter): Int {
+        var endParagraphNum = 0
+        for (pageIndex in 0 until textChapter.pageSize) {
+            val page = textChapter.getPage(pageIndex) ?: break
+            for (line in page.lines) {
+                if (!line.isTitle && line.isParagraphEnd && line.paragraphNum > endParagraphNum) {
+                    endParagraphNum = line.paragraphNum
+                }
+            }
+        }
+        return endParagraphNum
+    }
+
+    /** 把一行上的段评气泡同步到期望列表（按 reviewId 去重，0 表示本段气泡）。 */
+    private fun syncReviewColumns(line: TextLine, desired: List<Pair<Int, Int>>): Boolean {
+        var changed = false
+        val desiredIds = desired.map { it.first }.toHashSet()
+        // 移除不再需要的气泡
+        if (line.columns.any { it is ReviewColumn && it.reviewId !in desiredIds }) {
+            line.removeColumns { it is ReviewColumn && it.reviewId !in desiredIds }
+            changed = true
+        }
+        // 更新已有 / 新增缺失
+        desired.forEach { (reviewId, count) ->
+            val column = line.columns.filterIsInstance<ReviewColumn>()
+                .firstOrNull { it.reviewId == reviewId }
+            if (column == null) {
+                line.addColumn(ReviewColumn(start = 0f, end = 0f, count = count, reviewId = reviewId))
+                changed = true
+            } else if (column.count != count) {
+                column.count = count
+                changed = true
+            }
+        }
+        if (layoutReviewColumns(line)) {
+            changed = true
+        }
+        return changed
+    }
+
+    /** 重新排布一行上的所有段评气泡：从文字末尾起依次向右，受屏幕右缘约束。 */
+    private fun layoutReviewColumns(textLine: TextLine): Boolean {
+        val reviewColumns = textLine.columns.filterIsInstance<ReviewColumn>()
+            .sortedBy { it.reviewId }
+        if (reviewColumns.isEmpty()) return false
         val width = getReviewWidth(textLine.isTitle)
         // 图标可延伸进右侧页边距，最多到屏幕物理边缘（双页时为本页中线），留 1dp 不贴边
         val screenRight = if (doublePage && textLine.isLeftLine) {
@@ -1201,19 +1231,19 @@ object ChapterProvider {
         }
         val maxEnd = screenRight - 1.dpToPx()
         val textEnd = textLine.columns.lastOrNull { it !is ReviewColumn }?.end ?: textLine.lineEnd
-        // 紧跟文字末尾；排满整行时溢出到页边距，而不是被往左拽压在文字上
-        val start = kotlin.math.min(textEnd, maxEnd - width)
-        return start to start + width
-    }
-
-    private fun updateReviewColumnLayout(reviewColumn: ReviewColumn, textLine: TextLine): Boolean {
-        val (start, end) = getReviewColumnRange(textLine)
-        if (reviewColumn.start == start && reviewColumn.end == end) {
-            return false
+        // 紧跟文字末尾；排满整行时整体向左让最后一个气泡贴住页边距，而不是压在文字上
+        var cursor = kotlin.math.min(textEnd, maxEnd - width * reviewColumns.size)
+        var changed = false
+        reviewColumns.forEach { column ->
+            val newEnd = cursor + width
+            if (column.start != cursor || column.end != newEnd) {
+                column.start = cursor
+                column.end = newEnd
+                changed = true
+            }
+            cursor = newEnd
         }
-        reviewColumn.start = start
-        reviewColumn.end = end
-        return true
+        return changed
     }
 
     fun getReviewWidth(isTitle: Boolean): Float {
