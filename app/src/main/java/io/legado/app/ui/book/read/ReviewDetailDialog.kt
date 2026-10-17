@@ -70,6 +70,7 @@ import io.legado.app.utils.isDataUrl
 import io.legado.app.utils.getCompatColor
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.longToastOnUi
+import io.legado.app.utils.observeEvent
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.visible
 import io.legado.app.utils.viewbindingdelegate.viewBinding
@@ -390,6 +391,20 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         }
     }
 
+    /**
+     * 待发布表一变就与列表对齐：发布成功/失败可能发生在另一个弹窗实例里，
+     * 本实例注入的占位副本收不到那次回调，不靠这条通知就会一直停在「发送中」。
+     */
+    override fun observeLiveBus() {
+        observeEvent<String>(EventBus.REFRESH_REVIEW_PENDING) { key ->
+            if (key == pendingReviewKey()) {
+                runOnUiIfAlive {
+                    if (syncPendingItems()) renderUiItems()
+                }
+            }
+        }
+    }
+
     /** 本段在应用级待发布存储里的 key；书未打开时无从定位。 */
     private fun pendingReviewKey(): String? {
         val book = ReadBook.book ?: return null
@@ -443,38 +458,95 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
     }
 
     /**
-     * 把本段仍在途/失败的发布占位补进列表，供重开弹窗时恢复发送中/草稿态；
-     * 已存在于 detailItems 的（本次会话刚插入，或已确认并与真实评论共存）不重复注入。
+     * 把本段占位项与 [NostrPendingReviews] 对齐：先补入表里有、列表里没有的（重开弹窗时恢复
+     * 发送中/草稿态），再移除表里已经没有的——发布成功后清的是全局表与发起它的那次回调，
+     * 别的实例注入的副本只能在这里清掉。已存在且状态一致的项不动。
      * 父项不在列表时回复退化为顶层占位，确保内容不会因父项缺页而消失。
+     * 返回是否改动了列表。
      */
-    private fun injectPendingReviewItems() {
-        val key = pendingReviewKey() ?: return
+    private fun syncPendingItems(): Boolean {
+        val key = pendingReviewKey() ?: return false
         // 进程重启后内存占位已丢：先从落盘草稿恢复，重开弹窗仍能看到草稿项并可点击重发。
         NostrPendingReviews.hydrate(key)
+        val entries = NostrPendingReviews.list(key)
+        val aliveIds = entries.map { it.localId }.toSet()
+        var changed = removeStalePendingItems(aliveIds)
         val topLevel = ArrayList<ReviewDetailItem>()
-        NostrPendingReviews.list(key).forEach { entry ->
-            if (findDetailItemById(entry.localId) != null) return@forEach
+        entries.forEach { entry ->
             val pendingState = if (entry.state == NostrPendingReviews.STATE_DRAFT) {
                 PENDING_FAILED
             } else {
                 PENDING_SENDING
             }
-            val pending = buildPendingItem(
-                localId = entry.localId,
-                text = entry.text,
-                createdAtMs = entry.createdAtMs,
-                pendingState = pendingState
-            )
-            val parentId = entry.parentId
-            if (parentId != null && appendReplyToItem(parentId, pending)) {
-                findTopLevelParentKey(parentId)?.let { expandedReplyParentKeys.add(it) }
-            } else {
-                topLevel.add(pending)
+            val existing = findDetailItemById(entry.localId)
+            if (existing == null) {
+                val pending = buildPendingItem(
+                    localId = entry.localId,
+                    text = entry.text,
+                    createdAtMs = entry.createdAtMs,
+                    pendingState = pendingState
+                )
+                val parentId = entry.parentId
+                if (parentId != null && appendReplyToItem(parentId, pending)) {
+                    findTopLevelParentKey(parentId)?.let { expandedReplyParentKeys.add(it) }
+                } else {
+                    topLevel.add(pending)
+                }
+                changed = true
+            } else if (existing.pendingState != pendingState) {
+                if (updatePendingState(entry.localId, pendingState)) changed = true
             }
         }
-        if (topLevel.isEmpty()) return
-        detailItems.addAll(0, topLevel)
-        reindexMainItems()
+        if (topLevel.isNotEmpty()) detailItems.addAll(0, topLevel)
+        if (changed) reindexMainItems()
+        return changed
+    }
+
+    /** 移除表里已不存在的占位项（含嵌套回复）：发布成功后它们已被真实评论取代。 */
+    private fun removeStalePendingItems(aliveIds: Set<String>): Boolean {
+        var removed = false
+        for (index in detailItems.indices.reversed()) {
+            val item = detailItems[index]
+            if (item.isStalePending(aliveIds)) {
+                detailItems.removeAt(index)
+                removed = true
+                continue
+            }
+            val replies = removeStalePendingReplies(item.replies, aliveIds) ?: continue
+            detailItems[index] = item.copy(replies = replies)
+            removed = true
+        }
+        return removed
+    }
+
+    private fun removeStalePendingReplies(
+        replies: List<ReviewDetailItem>,
+        aliveIds: Set<String>
+    ): List<ReviewDetailItem>? {
+        if (replies.isEmpty()) return null
+        var changed = false
+        val result = ArrayList<ReviewDetailItem>(replies.size)
+        replies.forEach { reply ->
+            if (reply.isStalePending(aliveIds)) {
+                changed = true
+                return@forEach
+            }
+            val nested = removeStalePendingReplies(reply.replies, aliveIds)
+            if (nested != null) {
+                changed = true
+                result.add(reply.copy(replies = nested))
+            } else {
+                result.add(reply)
+            }
+        }
+        return if (changed) result else null
+    }
+
+    /** 占位项是否已不在待发布表里；没有 id 的占位无从对账，按过期处理。 */
+    private fun ReviewDetailItem.isStalePending(aliveIds: Set<String>): Boolean {
+        if (pendingState == null) return false
+        val localId = id ?: return true
+        return localId !in aliveIds
     }
 
     /** 把占位回复挂到 targetId 评论的 replies 末尾(递归查找，含嵌套)；返回是否找到父项。 */
@@ -677,14 +749,19 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
 
     /** 改变本地占位项的发布态(sending/failed)，触发重绑以更新 chip。 */
     private fun setPendingState(localId: String, state: String?) {
+        if (updatePendingState(localId, state)) renderUiItems()
+    }
+
+    /** 只改状态不重绑：供 [syncPendingItems] 批量对齐全局表时使用。 */
+    private fun updatePendingState(localId: String, state: String?): Boolean {
         for (index in detailItems.indices) {
             val updated = detailItems[index].withPendingState(localId, state)
             if (updated !== detailItems[index]) {
                 detailItems[index] = updated
-                renderUiItems()
-                return
+                return true
             }
         }
+        return false
     }
 
     private fun ReviewDetailItem.withPendingState(
@@ -1081,8 +1158,8 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
             if (!cached.isNullOrEmpty()) {
                 mergeDetailItems(cached)
             }
-            // 缓存并入后父项才就位，此时补入待发布占位：回复能挂到父项，否则退化为顶层
-            injectPendingReviewItems()
+            // 缓存并入后父项才就位，此时与待发布表对账：回复能挂到父项，否则退化为顶层
+            syncPendingItems()
             if (detailItems.isNotEmpty()) {
                 binding.rotateLoading.gone()
                 renderUiItems()

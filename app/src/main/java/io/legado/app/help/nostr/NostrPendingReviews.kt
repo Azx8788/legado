@@ -1,6 +1,8 @@
 package io.legado.app.help.nostr
 
+import io.legado.app.constant.EventBus
 import io.legado.app.utils.ACache
+import io.legado.app.utils.postEvent
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -41,6 +43,7 @@ internal object NostrPendingReviews {
     fun add(entry: Entry) {
         entries[entry.localId] = entry
         persist(entry.key)
+        notifyChanged(entry.key)
     }
 
     @Synchronized
@@ -69,6 +72,7 @@ internal object NostrPendingReviews {
     fun remove(localId: String) {
         val entry = entries.remove(localId) ?: return
         persist(entry.key)
+        notifyChanged(entry.key)
     }
 
     @Synchronized
@@ -76,6 +80,7 @@ internal object NostrPendingReviews {
         val entry = entries[localId] ?: return
         entries[localId] = entry.copy(state = STATE_DRAFT)
         persist(entry.key)
+        notifyChanged(entry.key)
     }
 
     @Synchronized
@@ -83,6 +88,12 @@ internal object NostrPendingReviews {
         val entry = entries[localId] ?: return
         entries[localId] = entry.copy(state = STATE_SENDING)
         // 不删落盘草稿：重发在途时进程被杀，重启后仍能作为草稿恢复。
+        notifyChanged(entry.key)
+    }
+
+    /** 通知已打开的段评弹窗与这里对账；弹窗据此清掉发布成功后残留的占位副本。 */
+    private fun notifyChanged(key: String) {
+        postEvent(EventBus.REFRESH_REVIEW_PENDING, key)
     }
 
     /** 把该 key 下内存里的条目写回磁盘；该 key 无条目时清掉磁盘键。 */
