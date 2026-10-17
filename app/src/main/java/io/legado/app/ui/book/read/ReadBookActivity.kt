@@ -346,6 +346,12 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 回查未及时反映新评论时，上屏取 max(远端, 下限)，避免 +1 被旧值冲掉；超时/切章即清除。
      */
     private val nostrReviewCountFloor = HashMap<String, MutableMap<Int, Int>>()
+
+    /**
+     * 发布前本章统计的快照：发布失败回退时用它撤销本段的乐观 +1，同时保住本章其余段的缓存，
+     * 避免离线时「清缓存重拉」只拿到降级空结果、把已缓存的气泡整章抹掉。
+     */
+    private val nostrReviewPreBumpCache = HashMap<String, ReviewSummaryResult>()
     private val nostrReviewUnlocatedCache =
         object : LinkedHashMap<String, List<NostrReviewClient.Comment>>(8, 0.75f, true) {
             override fun removeEldestEntry(
@@ -2295,10 +2301,6 @@ class ReadBookActivity : BaseReadBookActivity(),
         val chapterIndex = ReadBook.durChapterIndex
         val key = buildReviewSummaryKey(book, chapterIndex)
         val previous = synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] }
-        synchronized(nostrReviewSummaryCache) {
-            nostrReviewSummaryCache.remove(key)
-        }
-        removeDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key)
         synchronized(nostrReviewSummaryLoadingKeys) {
             nostrReviewSummaryLoadingKeys.remove(key)
         }
@@ -2319,7 +2321,11 @@ class ReadBookActivity : BaseReadBookActivity(),
             val bumped = (previous ?: ReviewSummaryResult(emptyMap(), emptyMap())).copy(
                 counts = (previous?.counts ?: emptyMap()) + (bumpParagraphNum to bumpedCount)
             )
+            synchronized(nostrReviewPreBumpCache) {
+                nostrReviewPreBumpCache[key] = previous ?: ReviewSummaryResult(emptyMap(), emptyMap())
+            }
             synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = bumped }
+            writeDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key, bumped)
             // 登记本地下限：两次递进回查若仍拿到旧值，上屏时取 max(远端, 下限)，避免 +1 被冲掉。
             putNostrReviewCountFloor(key, bumpParagraphNum, bumpedCount)
             // 第三个参数是「书源计数」位置：必须传书源缓存；传 nostr 摘要会与 nostr 计数重复相加。
@@ -2331,6 +2337,23 @@ class ReadBookActivity : BaseReadBookActivity(),
             )
             bumpedCount
         } else {
+            // 失败回退：只撤销本段的乐观 +1（恢复发布前快照），不清本章其它段的统计——
+            // 离线时重拉只会拿到降级空结果，清缓存会把已缓存的气泡整章抹掉。
+            if (event != null) {
+                val pre = synchronized(nostrReviewPreBumpCache) {
+                    nostrReviewPreBumpCache.remove(key)
+                }
+                if (pre != null) {
+                    synchronized(nostrReviewSummaryCache) { nostrReviewSummaryCache[key] = pre }
+                    writeDiskReviewSummary(DISK_SUMMARY_KIND_NOSTR, key, pre)
+                    applyReviewSummary(
+                        key,
+                        chapterIndex,
+                        synchronized(reviewSummaryCache) { reviewSummaryCache[key] }
+                            ?: ReviewSummaryResult(emptyMap(), emptyMap())
+                    )
+                }
+            }
             null
         }
         // 作废在途的统计响应，避免旧结果覆盖刚刷新的数据。
@@ -2344,10 +2367,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         }, REVIEW_SUMMARY_REFRESH_DELAY_MS)
         handler.postDelayed({
             if (token == reviewSummaryRequestToken) {
-                // 第一次回查已把结果写回内存缓存，需再作废一次才能真再拉一次。
-                synchronized(nostrReviewSummaryCache) {
-                    nostrReviewSummaryCache.remove(key)
-                }
+                // 清加载标记让第二次回查能真再拉一次；不再删缓存，否则离线时又会把本章统计打空。
                 synchronized(nostrReviewSummaryLoadingKeys) {
                     nostrReviewSummaryLoadingKeys.remove(key)
                 }
@@ -2514,6 +2534,9 @@ class ReadBookActivity : BaseReadBookActivity(),
     private fun clearNostrReviewCountFloors() {
         synchronized(nostrReviewCountFloor) {
             nostrReviewCountFloor.clear()
+        }
+        synchronized(nostrReviewPreBumpCache) {
+            nostrReviewPreBumpCache.clear()
         }
     }
 
