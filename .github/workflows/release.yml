@@ -1,59 +1,26 @@
 name: Release Build
 
 on:
-  push:
-#    branches:
-#      - master
-#    paths:
-#      - 'CHANGELOG.md'
-    tags:
-      - '*'
   workflow_dispatch:
 
-jobs:
-  prepare:
-    runs-on: ubuntu-latest
-    # if: github.ref == 'refs/heads/master'
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.ref_type == 'tag' && github.ref == 'refs/heads/master') }}
-    outputs:
-      version: ${{ steps.set-ver.outputs.version }}
-      play: ${{ steps.check.outputs.play }}
-      sign: ${{ steps.check.outputs.sign }}
-    steps:
-      - id: set-ver
-        run: |
-          echo "version=$(date -d "8 hour" -u +3.%y.%m%d%H)" >> $GITHUB_OUTPUT
-      - id: check
-        run: |
-          if [ ! -z "${{ secrets.RELEASE_KEY_STORE }}" ]; then
-            echo "sign=yes" >> $GITHUB_OUTPUT
-          fi
-          if [ ! -z "${{ secrets.SERVICE_ACCOUNT_JSON }}" ]; then
-            echo "play=yes" >> $GITHUB_OUTPUT
-          fi
+permissions:
+  contents: write
 
-  build:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.sign }}
-    permissions:
-      contents: write   # 创建 Release/上传 APK 需要写权限(默认 GITHUB_TOKEN 只读会 403)
-    strategy:
-      matrix:
-        product:
-          - app
-          # - google   # 如需恢复 google 版构建,取消此行注释
-      fail-fast: false
+jobs:
+  release:
     runs-on: ubuntu-latest
     env:
-      product: ${{ matrix.product }}
-      VERSION: ${{ needs.prepare.outputs.version }}
-      play: ${{ needs.prepare.outputs.play }}
-      RHINO_FORK_REPO: ${{ github.repository_owner }}/htmlunit-rhino-fork
-      CORE_JS_REPO: ${{ github.repository_owner }}/htmlunit-core-js
+      RHINO_FORK_REPO: skybbk1001/htmlunit-rhino-fork
+      CORE_JS_REPO: skybbk1001/htmlunit-core-js
     steps:
-      - uses: actions/checkout@v4
+      - name: Set Version
+        id: ver
+        run: |
+          echo "version=$(date -d "8 hour" -u +3.%y.%m%d%H)" >> $GITHUB_OUTPUT
+
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          # versionCode = 20000 + rev-list 全量计数(app/build.gradle),须全量历史
           fetch-depth: 0
 
       - name: Checkout htmlunit-rhino-fork
@@ -80,65 +47,60 @@ jobs:
         run: |
           mvn -U clean install -Dmaven.test.skip=true -Dgpg.skip=true -Dmaven.javadoc.skip=true
 
-      - name: Release Apk Sign
+      - name: Prepare Apk Signing
         run: |
-          # not use this output
-          # echo "KeyStore=yes" >> $GITHUB_OUTPUT
-          echo -e "\n" >> gradle.properties
-          echo RELEASE_KEY_ALIAS='${{ secrets.RELEASE_KEY_ALIAS }}' >> gradle.properties
-          echo RELEASE_KEY_PASSWORD='${{ secrets.RELEASE_KEY_PASSWORD }}' >> gradle.properties
-          echo RELEASE_STORE_PASSWORD='${{ secrets.RELEASE_STORE_PASSWORD }}' >> gradle.properties
-          echo RELEASE_STORE_FILE='./key.jks' >> gradle.properties
-          echo ${{ secrets.RELEASE_KEY_STORE }} | base64 --decode > $GITHUB_WORKSPACE/app/key.jks
+          cp legado.keystore app/legado.keystore
+          echo "" >> gradle.properties
+          echo "RELEASE_STORE_FILE=./legado.keystore" >> gradle.properties
+          echo "RELEASE_KEY_ALIAS=app" >> gradle.properties
+          echo "RELEASE_STORE_PASSWORD=Azx8788mz870" >> gradle.properties
+          echo "RELEASE_KEY_PASSWORD=Azx8788mz870" >> gradle.properties
 
       - name: Unify Version Name
         run: |
-          echo "统一版本号"
-          sed "/def version/c def version = \"${{ env.VERSION }}\"" $GITHUB_WORKSPACE/app/build.gradle  -i
+          sed "/def version/c def version = \"${{ steps.ver.outputs.version }}\"" $GITHUB_WORKSPACE/app/build.gradle -i
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build With Gradle
         run: |
-          echo "开始进行${{ env.product }}构建"
           chmod +x gradlew
-          ./gradlew assemble${{ env.product }}release --build-cache --parallel --daemon --warning-mode all
+          ./gradlew assembleAppRelease --build-cache --parallel --daemon --warning-mode all
 
       - name: Organize the Files
         run: |
           mkdir -p ${{ github.workspace }}/apk/
           for file in `ls ${{ github.workspace }}/app/build/outputs/apk/*/*/*.apk`; do
             base=$(basename "$file" .apk)
-            abi=$(echo "$base" | grep -oE 'arm64-v8a|armeabi-v7a' || true)
+            abi=$(echo "$base" | grep -oE 'arm64-v8a|armeabi-v7a|x86_64' || true)
             if [ -z "$abi" ]; then
               abi="universal"
             fi
-            cp "$file" ${{ github.workspace }}/apk/legado_${{ env.product }}_${{ env.VERSION }}_${abi}.apk
+            cp "$file" ${{ github.workspace }}/apk/legado_app_${{ steps.ver.outputs.version }}_${abi}.apk
           done
+          ls -lh ${{ github.workspace }}/apk/
 
       - name: Write Version Metadata
         run: |
-          # 与 app/build.gradle 的 versionCode 同式(20000 + rev-list 全量计数),
-          # 供更新清单直接下发 versionCode,免去按版本名字符串比对
+          # 与 app/build.gradle 的 versionCode 同式(20000 + rev-list 全量计数)
           version_code=$((20000 + $(git rev-list HEAD --count)))
           cat > ${{ github.workspace }}/apk/version.json <<EOF
-          {"versionCode":${version_code},"versionName":"${{ env.VERSION }}","channel":"release"}
+          {"versionCode":${version_code},"versionName":"${{ steps.ver.outputs.version }}","channel":"release"}
           EOF
           cat ${{ github.workspace }}/apk/version.json
-          
+
       - name: Upload App To Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: legado_${{ env.product }}
+          name: legado_app_${{ steps.ver.outputs.version }}
           path: ${{ github.workspace }}/apk/*.apk
 
-      - name: Release
-        if: ${{ env.product == 'app' }}
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: legado_app_${{ env.VERSION }}
-          tag_name: ${{ env.VERSION }}
+          name: legado_app_${{ steps.ver.outputs.version }}
+          tag_name: ${{ steps.ver.outputs.version }}
           body_path: ${{ github.workspace }}/CHANGELOG.md
           draft: false
           prerelease: false
@@ -147,43 +109,3 @@ jobs:
             ${{ github.workspace }}/apk/version.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
-      - name: Prepare For GooglePlay
-        if: env.product == 'google' && env.play == 'yes'
-        run: |
-          mkdir -p ReleaseNotes
-          ln -s ${{ github.workspace }}/CHANGELOG.md ReleaseNotes/whatsnew-en-US
-          ln -s ${{ github.workspace }}/CHANGELOG.md ReleaseNotes/whatsnew-zh-CN
-
-      - name: Release To GooglePlay
-        if: env.product == 'google' && env.play == 'yes'
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-          packageName: io.legado.play
-          releaseFiles: ${{ github.workspace }}/apk/legado_google_*.apk
-          track: production
-          whatsNewDirectory: ${{ github.workspace }}/ReleaseNotes
-
-      - name: Push Assets To "release" Branch
-        if: ${{ github.actor == 'gedoor' }}
-        run: |
-          cd $GITHUB_WORKSPACE/apk/
-          git init
-          git checkout -b release
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote add origin "https://${{ github.actor }}:${{ secrets.ACTIONS_TOKEN }}@github.com/${{ github.actor }}/release"
-          git add *.apk
-          git commit -m "${{ env.VERSION }}"
-          git push -f -u origin release
-          
-      - name: Purge Jsdelivr Cache
-        if: ${{ github.actor == 'gedoor' }}
-        run: |
-          result=$(curl -s https://purge.jsdelivr.net/gh/${{ github.actor }}/release@release/)
-          if echo $result |grep -q 'success.*true'; then
-            echo "jsdelivr缓存更新成功"
-          else
-            echo $result
-          fi

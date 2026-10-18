@@ -1,0 +1,84 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - legadoT
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      RHINO_FORK_REPO: skybbk1001/htmlunit-rhino-fork
+      CORE_JS_REPO: skybbk1001/htmlunit-core-js
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout htmlunit-rhino-fork
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.RHINO_FORK_REPO }}
+          path: htmlunit-rhino-fork
+
+      - name: Checkout htmlunit-core-js
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CORE_JS_REPO }}
+          path: htmlunit-core-js
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 21
+          cache: maven
+
+      - name: Install Forked htmlunit-core-js To mavenLocal
+        working-directory: htmlunit-core-js
+        run: |
+          mvn -U clean install -Dmaven.test.skip=true -Dgpg.skip=true -Dmaven.javadoc.skip=true
+
+      - name: Prepare Apk Signing
+        run: |
+          cp legado.keystore app/legado.keystore
+          echo "" >> gradle.properties
+          echo "RELEASE_STORE_FILE=./legado.keystore" >> gradle.properties
+          echo "RELEASE_KEY_ALIAS=app" >> gradle.properties
+          echo "RELEASE_STORE_PASSWORD=Azx8788mz870" >> gradle.properties
+          echo "RELEASE_KEY_PASSWORD=Azx8788mz870" >> gradle.properties
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build With Gradle
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleAppRelease --build-cache --parallel --daemon --warning-mode all
+
+      - name: Organize the Files
+        run: |
+          mkdir -p ${{ github.workspace }}/apk/
+          for file in `ls ${{ github.workspace }}/app/build/outputs/apk/*/*/*.apk`; do
+            base=$(basename "$file" .apk)
+            abi=$(echo "$base" | grep -oE 'arm64-v8a|armeabi-v7a|x86_64' || true)
+            if [ -z "$abi" ]; then
+              abi="universal"
+            fi
+            cp "$file" ${{ github.workspace }}/apk/legado_app_${abi}.apk
+          done
+          ls -lh ${{ github.workspace }}/apk/
+
+      - name: Upload APK To Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: legado_app
+          path: ${{ github.workspace }}/apk/*.apk
+          retention-days: 30
