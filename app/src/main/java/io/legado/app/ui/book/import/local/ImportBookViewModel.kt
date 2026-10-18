@@ -1,6 +1,7 @@
 package io.legado.app.ui.book.import.local
 
 import android.app.Application
+import io.legado.app.R
 import android.net.Uri
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppLog

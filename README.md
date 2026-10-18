@@ -15,7 +15,9 @@ Legado / 开源阅读
 Legado is a free and open source novel reader for Android.
 </div>
 
-> 本仓库为 **阅读T**（Legado 增强分支）：在 Legado 基础上扩展定时任务、JS 书源、内置 MCP 服务等能力，详见下方 [阅读T增强特性](#阅读t增强特性)。
+> 本仓库为 **阅读T · 个人修改版**：基于 [gedoor/legado](https://github.com/gedoor/legado)（GPL-3.0 开源）
+> 与 [skybbk1001/legadoT](https://github.com/skybbk1001/legadoT)（阅读T 增强版）二次修改，
+> 非官方发布，仅供个人学习交流使用。完整保留 legadoT 的全套增强能力，并额外预置了书源等便利功能。
 
 [![](https://img.shields.io/badge/-Contents:-696969.svg)](#contents) [![](https://img.shields.io/badge/-Function-F5F5F5.svg)](#Function-主要功能-) [![](https://img.shields.io/badge/-Community-F5F5F5.svg)](#Community-交流社区-) [![](https://img.shields.io/badge/-API-F5F5F5.svg)](#API-) [![](https://img.shields.io/badge/-Other-F5F5F5.svg)](#Other-其他-) [![](https://img.shields.io/badge/-Grateful-F5F5F5.svg)](#Grateful-感谢-) [![](https://img.shields.io/badge/-Interface-F5F5F5.svg)](#Interface-界面-)
 
@@ -108,6 +110,27 @@ Legado is a free and open source novel reader for Android.
     <img src="https://img.shields.io/badge/-返回顶部-orange.svg" alt="#" align="right">
 </a>
 
+# 本版本特点（个人定制）
+
+- **开箱即用**：首次启动自动导入内置书源（5 个）与 RSS 订阅源（8 个），无需手动找源
+- **免责声明**：首次启动展示免责声明与常见问题，5 秒倒计时结束后方可关闭
+- **书源校验增强**：校验完成后弹出汇总对话框（总数/可用/失效），支持一键删除失效书源（带二次确认）
+- **文件直选导入**：「添加本地」与字体选择支持系统文件选择器直接多选文件导入（txt/epub/压缩包/ttf），无需先授权目录
+- **书源脚本增强**：新增 `java.decompressBytes` / `java.decompressString`（gzip / zlib / 裸 deflate / 自动识别）
+- **更新检查**：应用内「检查更新」指向本仓库 Releases，启动时自动检查（24 小时最多一次，可忽略版本）
+- **独立安装**：自有签名与独立包名（`io.legado.app.releaseT`），可与官方版及其它修改版共存安装
+
+# Download-下载与安装
+
+- 下载：[Releases](https://github.com/Azx8788/legado/releases)
+- 按设备选择安装包：绝大多数手机选 `arm64-v8a`；较老设备选 `armeabi-v7a`；模拟器选 `x86_64`
+- 更新方式：下载新版 APK 直接覆盖安装（同一签名）；与官方版/旧版包名不同，可同时安装、数据互不影响
+- 从其它版本迁移：在旧版「备份与恢复」导出备份后，在新版导入即可（建议先在旧版备份）
+
+<a href="#readme">
+    <img src="https://img.shields.io/badge/-返回顶部-orange.svg" alt="#" align="right">
+</a>
+
 # Community-交流社区 [![](https://img.shields.io/badge/-Community-F5F5F5.svg)](#Community-交流社区-)
 
 #### Telegram
@@ -141,11 +164,13 @@ https://www.yuque.com/legado/wiki/community
 
 ##### 免责声明
 
-https://gedoor.github.io/Disclaimer
+本项目基于 GPL-3.0 协议开源，仅供个人学习交流使用，不提供、不存储、不传播任何小说正文内容。
+内置书源为互联网公开链接聚合规则，版权归原始内容网站/作者所有；其可用性与合法性请自行判断。
+详细条款见应用内「免责声明」（`app/src/main/assets/disclaimer.md`）与 https://gedoor.github.io/Disclaimer
 
 ##### 阅读3.0
 
-- [下载发布](https://github.com/skybbk1001/legado/releases)
+- [下载发布](https://github.com/Azx8788/legado/releases)
 - [书源规则](https://mgz0227.github.io/The-tutorial-of-Legado/)
 - [更新日志](/app/src/main/assets/updateLog.md)
 - [帮助文档](/app/src/main/assets/web/help/md/appHelp.md)
