@@ -706,6 +706,142 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
         return if (found) updated else null
     }
 
+    /**
+     * 发布成功后把占位项就地换成已确认条目：占位期间这行一直在列表里，只改状态与内容，
+     * 不做整页重载——重载会先清空列表再从缓存重建，缓存没命中就只剩空白等联网。
+     * [parentId] 非空表示回复，兜底插入时挂在父项 replies 末尾（与占位位置一致）。
+     */
+    private fun applyPublishedComment(
+        localId: String,
+        confirmed: ReviewDetailItem,
+        parentId: String?
+    ) {
+        val eventId = confirmed.id
+        if (eventId == null) {
+            // 已签名事件必有 id；真缺 id 时拿不出稳定的键，只去掉发布态
+            setPendingState(localId, null)
+            return
+        }
+        when {
+            // 网络先回来时真实评论可能已在列表里：更新该条并删掉占位，避免同一条事件两行
+            updateItemById(eventId, confirmed) -> removeLocalPendingItem(localId)
+            // 占位可能已被对账删掉，按原插入规则补上：顶层在顶部、回复在父项末尾
+            !replaceItemById(localId, confirmed) -> {
+                if (parentId != null && appendReplyToItem(parentId, confirmed)) {
+                    findTopLevelParentKey(parentId)?.let { expandedReplyParentKeys.add(it) }
+                } else {
+                    detailItems.add(0, confirmed)
+                }
+            }
+        }
+        if (parentId == null) {
+            // 占位置顶且从不进冻结序列，不把新 key 补到最前，替换后这行会掉到列表末尾
+            val oldKey = buildDetailItemKey(confirmed.copy(id = localId), isReply = false)
+            val newKey = buildDetailItemKey(confirmed, isReply = false)
+            if (expandedReplyParentKeys.remove(oldKey)) expandedReplyParentKeys.add(newKey)
+            sortOrder = sortOrder?.let { listOf(newKey) + it.filterNot { key -> key == newKey } }
+        }
+        reindexMainItems()
+        renderUiItems()
+    }
+
+    /** 把 id 相同的占位换成 [replacement]（保位置，回复保留其子树）；返回是否命中。 */
+    private fun replaceItemById(id: String, replacement: ReviewDetailItem): Boolean {
+        for (index in detailItems.indices) {
+            val item = detailItems[index]
+            if (item.id == id) {
+                detailItems[index] = replacement.copy(replies = item.replies)
+                return true
+            }
+            val replies = replaceReplyById(item.replies, id, replacement)
+            if (replies != null) {
+                detailItems[index] = item.copy(replies = replies)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun replaceReplyById(
+        replies: List<ReviewDetailItem>,
+        id: String,
+        replacement: ReviewDetailItem
+    ): List<ReviewDetailItem>? {
+        if (replies.isEmpty()) return null
+        var found = false
+        val result = replies.map { reply ->
+            when {
+                reply.id == id -> {
+                    found = true
+                    replacement.copy(replies = reply.replies)
+                }
+                else -> {
+                    val nested = replaceReplyById(reply.replies, id, replacement)
+                    if (nested != null) {
+                        found = true
+                        reply.copy(replies = nested)
+                    } else {
+                        reply
+                    }
+                }
+            }
+        }
+        return if (found) result else null
+    }
+
+    /** 把 id 命中的项内容刷成新发布结果，保留点赞/回复数等网络已带回的字段。 */
+    private fun updateItemById(id: String, published: ReviewDetailItem): Boolean {
+        for (index in detailItems.indices) {
+            val item = detailItems[index]
+            if (item.id == id) {
+                detailItems[index] = item.withPublishedContent(published)
+                return true
+            }
+            val replies = updateReplyById(item.replies, id, published)
+            if (replies != null) {
+                detailItems[index] = item.copy(replies = replies)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun updateReplyById(
+        replies: List<ReviewDetailItem>,
+        id: String,
+        published: ReviewDetailItem
+    ): List<ReviewDetailItem>? {
+        if (replies.isEmpty()) return null
+        var found = false
+        val result = replies.map { reply ->
+            when {
+                reply.id == id -> {
+                    found = true
+                    reply.withPublishedContent(published)
+                }
+                else -> {
+                    val nested = updateReplyById(reply.replies, id, published)
+                    if (nested != null) {
+                        found = true
+                        reply.copy(replies = nested)
+                    } else {
+                        reply
+                    }
+                }
+            }
+        }
+        return if (found) result else null
+    }
+
+    private fun ReviewDetailItem.withPublishedContent(
+        published: ReviewDetailItem
+    ): ReviewDetailItem = copy(
+        content = published.content,
+        time = published.time,
+        createdAt = published.createdAt,
+        pendingState = null
+    )
+
     /** 按 id 递归移除本地占位项。 */
     private fun removeLocalPendingItem(localId: String) {
         NostrPendingReviews.remove(localId)
@@ -835,17 +971,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                 cachePublishedComment(parentId = entry.parentId, item = confirmed)
                 NostrPendingReviews.remove(localId)
                 runOnUiIfAlive {
-                    removeLocalPendingItem(localId)
-                    val parentId = entry.parentId
-                    if (parentId != null) {
-                        appendReplyToItem(parentId, confirmed)
-                    } else {
-                        detailItems.add(0, confirmed)
-                        reindexMainItems()
-                    }
-                    sortOrder = null
-                    renderUiItems()
-                    loadDetailPage(paragraphNum, 1, append = false)
+                    applyPublishedComment(localId, confirmed, entry.parentId)
                 }
             },
             onFailure = { cause ->
@@ -957,12 +1083,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                         cachePublishedComment(parentId = null, item = confirmed)
                         NostrPendingReviews.remove(localId)
                         runOnUiIfAlive {
-                            removeLocalPendingItem(localId)
-                            detailItems.add(0, confirmed)
-                            reindexMainItems()
-                            sortOrder = null
-                            renderUiItems()
-                            loadDetailPage(paragraphNum, 1, append = false)
+                            applyPublishedComment(localId, confirmed, parentId = null)
                         }
                     },
                     onFailure = { cause ->
@@ -2238,11 +2359,7 @@ class ReviewDetailDialog() : BaseDialogFragment(R.layout.dialog_recycler_view) {
                             cachePublishedComment(parentId = parentId, item = confirmed)
                             NostrPendingReviews.remove(localId)
                             runOnUiIfAlive {
-                                removeLocalPendingItem(localId)
-                                appendReplyToItem(parentId, confirmed)
-                                sortOrder = null
-                                renderUiItems()
-                                loadDetailPage(paragraphNum, 1, append = false)
+                                applyPublishedComment(localId, confirmed, parentId)
                             }
                         },
                         onFailure = { cause ->
