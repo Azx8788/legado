@@ -98,6 +98,12 @@ by appCtx.getSharedPreferences("local", Context.MODE_PRIVATE) {
     val needUpRssSources: Boolean
         get() = !isLastVersion(6, "rssSourceVersion")
 
+    /**
+     * 内置书源清单有更新时重新导入（升级也能拿到新增的内置书源，不覆盖用户改动）
+     */
+    val needUpBookSources: Boolean
+        get() = !isLastVersion(2, "bookSourceVersion")
+
     val needUpDictRule: Boolean
         get() = !isLastVersion(2, "needUpDictRule")
 

@@ -35,6 +35,9 @@ object DefaultData {
                 if (LocalConfig.needUpRssSources) {
                     importDefaultRssSources()
                 }
+                if (LocalConfig.needUpBookSources) {
+                    importDefaultBookSources()
+                }
                 if (LocalConfig.needUpDictRule) {
                     importDefaultDictRules()
                 }
@@ -139,7 +142,12 @@ object DefaultData {
     }
 
     fun importDefaultBookSources() {
-        appDb.bookSourceDao.insert(*bookSources.toTypedArray())
+        //只补齐缺失的内置书源,不覆盖用户对已有书源的修改
+        bookSources.forEach { source ->
+            if (appDb.bookSourceDao.getBookSource(source.bookSourceUrl) == null) {
+                appDb.bookSourceDao.insert(source)
+            }
+        }
     }
 
     fun importDefaultDictRules() {
