@@ -11,6 +11,11 @@
         app:showAsAction="always" />
 
     <item
+        android:id="@+id/menu_select_files"
+        android:title="@string/select_file"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/menu_sort"
         android:title="@string/sort"
         android:icon="@drawable/ic_sort"

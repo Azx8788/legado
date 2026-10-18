@@ -67,6 +67,8 @@ import java.io.File
 import java.net.URL
 import java.nio.charset.Charset
 import java.security.MessageDigest
+import java.util.zip.GZIPInputStream
+import java.util.zip.Inflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import kotlin.coroutines.CoroutineContext
@@ -1042,4 +1044,111 @@ interface JsExtensionsAndroid : JsExtensionsDelegate, JsEncodeUtilsAndroid {
         return SourceLock.tick(key)
     }
 
+
+    //****************** 内存单段解压 (gzip/zlib/裸 deflate) ******************//
+
+    /**
+     * 解压内存中的一段压缩数据（不是压缩包，压缩包解压用 unArchiveFile）
+     *
+     * @param data 压缩数据：网络链接 / 十六进制字符串 / 字节数组
+     * @param format gzip / zlib / deflate(裸流，无 zlib 头) / auto(按魔数判断)
+     * @return 解压后的字节；数据损坏、截断或与 format 不符时返回 null
+     */
+    fun decompressBytes(data: Any?, format: String): ByteArray? {
+        return StreamDecompressor.decompress(resolveBytes(data), format)
+    }
+
+    /**
+     * 解压内存中的一段压缩数据并转为字符串，编码按内容自动检测
+     */
+    fun decompressString(data: Any?, format: String): String {
+        return decompressString(data, format, "")
+    }
+
+    /**
+     * 解压内存中的一段压缩数据并转为字符串
+     *
+     * @param charsetName 指定编码；空串时按内容自动检测
+     */
+    fun decompressString(data: Any?, format: String, charsetName: String): String {
+        val bytes = decompressBytes(data, format) ?: return ""
+        val charset = charsetName.ifBlank { EncodingDetect.getEncode(bytes) }
+        return String(bytes, Charset.forName(charset))
+    }
+
+    /**
+     * 入参归一为字节：链接走网络下载、十六进制字符串解码、字节数组原样
+     */
+    private fun resolveBytes(data: Any?): ByteArray {
+        return when (data) {
+            null -> ByteArray(0)
+            is ByteArray -> data
+            is List<*> -> ByteArray(data.size) { (data[it] as? Number)?.toByte() ?: 0 }
+            is String -> if (data.isAbsUrl()) {
+                AnalyzeUrl(data, source = getSource(), coroutineContext = context).getByteArray()
+            } else {
+                data.hexToByteArray()
+            }
+            else -> throw IllegalArgumentException("不支持的数据类型: ${data::class.java.name}")
+        }
+    }
+
+}
+
+
+/**
+ * 内存单段压缩数据解压：gzip / zlib / 裸 deflate
+ */
+internal object StreamDecompressor {
+
+    fun decompress(bytes: ByteArray, format: String): ByteArray? {
+        if (bytes.isEmpty()) return null
+        val fmt = format.lowercase()
+        if (fmt !in setOf("", "auto", "gzip", "zlib", "deflate")) {
+            throw IllegalArgumentException("不支持的压缩格式: $format")
+        }
+        return kotlin.runCatching {
+            when (fmt) {
+                "gzip" -> unGzip(bytes)
+                "zlib" -> inflate(bytes, false)
+                "deflate" -> inflate(bytes, true)
+                else -> auto(bytes)
+            }
+        }.getOrNull()
+    }
+
+    private fun auto(bytes: ByteArray): ByteArray {
+        return when {
+            bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte() ->
+                unGzip(bytes)
+            bytes.size >= 2 && bytes[0] == 0x78.toByte() &&
+                (((bytes[0].toInt() and 0xff) shl 8) or (bytes[1].toInt() and 0xff)) % 31 == 0 ->
+                inflate(bytes, false)
+            else -> inflate(bytes, true)
+        }
+    }
+
+    private fun unGzip(bytes: ByteArray): ByteArray {
+        return GZIPInputStream(ByteArrayInputStream(bytes)).use { it.readBytes() }
+    }
+
+    private fun inflate(bytes: ByteArray, nowrap: Boolean): ByteArray {
+        val inflater = Inflater(nowrap)
+        try {
+            inflater.setInput(bytes)
+            val out = ByteArrayOutputStream()
+            val buf = ByteArray(8192)
+            while (!inflater.finished()) {
+                val n = inflater.inflate(buf)
+                if (n == 0) {
+                    if (inflater.needsInput() || inflater.needsDictionary()) break
+                } else {
+                    out.write(buf, 0, n)
+                }
+            }
+            return out.toByteArray()
+        } finally {
+            inflater.end()
+        }
+    }
 }

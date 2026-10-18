@@ -4,6 +4,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.MenuItem
 import android.view.View
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.widget.Toolbar
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
@@ -70,6 +71,50 @@ class FontSelectDialog : BaseDialogFragment(R.layout.dialog_font_select),
         }
     }
 
+    /**
+     * 从系统文件选择器导入字体文件：复制到内置字体目录后立即可选
+     */
+    private val importFontFile =
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (uris.isNullOrEmpty()) return@registerForActivityResult
+            val ctx = requireContext().applicationContext
+            execute {
+                val fontDir = File(FileUtils.getPath(ctx.externalFiles, "font"))
+                if (!fontDir.exists()) fontDir.mkdirs()
+                var imported = 0
+                var skipped = 0
+                uris.forEach { uri ->
+                    kotlin.runCatching {
+                        val name = FileDoc.fromUri(uri, false).name
+                        if (!name.matches(fontRegex)) {
+                            skipped += 1
+                            return@forEach
+                        }
+                        val target = File(fontDir, name)
+                        ctx.contentResolver.openInputStream(uri)?.use { input ->
+                            target.outputStream().use { output -> input.copyTo(output) }
+                        } ?: throw IllegalStateException("无法读取所选文件")
+                        imported += 1
+                    }.onFailure {
+                        skipped += 1
+                        AppLog.put("导入字体文件失败\n${it.localizedMessage}", it)
+                    }
+                }
+                Pair(imported, skipped)
+            }.onSuccess { (imported, skipped) ->
+                if (imported > 0) {
+                    toastOnUi(getString(R.string.import_file_done, imported))
+                    refreshLocalFonts()
+                }
+                if (skipped > 0) {
+                    toastOnUi(getString(R.string.import_file_skipped, skipped))
+                }
+            }.onError {
+                AppLog.put("导入字体文件出错\n${it.localizedMessage}", it)
+                toastOnUi(it.localizedMessage)
+            }
+        }
+
     override fun onStart() {
         super.onStart()
         setLayout(0.9f, 0.9f)
@@ -121,6 +166,9 @@ class FontSelectDialog : BaseDialogFragment(R.layout.dialog_font_select),
             R.id.menu_other -> {
                 openFolder()
             }
+            R.id.menu_import_file -> {
+                importFontFile.launch(arrayOf("*/*"))
+            }
         }
         return true
     }
@@ -132,6 +180,14 @@ class FontSelectDialog : BaseDialogFragment(R.layout.dialog_font_select),
                 otherActions = arrayListOf(SelectItem(defaultPath, -1))
             }
         }
+    }
+
+    /**
+     * 重新合并内置字体目录中的字体到当前列表
+     */
+    private fun refreshLocalFonts() {
+        val items = ArrayList(adapter.getItems())
+        adapter.setItems(mergeFontItems(items, getLocalFonts()))
     }
 
     private fun getLocalFonts(): ArrayList<FileDoc> {

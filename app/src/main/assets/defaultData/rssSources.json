@@ -38,5 +38,49 @@
     "sourceIcon": "https://cdn.jsdelivr.net/gh/gedoor/legado@master/app/src/main/res/mipmap-hdpi/ic_launcher.png",
     "sourceName": "烏雲净化",
     "sourceUrl": "https://www.lanzoux.com/b0bw8jwoh"
+  },
+  {
+    "customOrder": 10,
+    "enableJs": true,
+    "enabled": true,
+    "singleUrl": true,
+    "sourceGroup": "书源仓库",
+    "sourceIcon": "https://www.yckceo.com/static/img/yuedu.png",
+    "sourceName": "源仓库",
+    "sourceUrl": "https://www.yckceo.com",
+    "sourceComment": "源仓库主站，提供阅读/Legado 等小说软件的书源分享与下载。地址发布页 yckceo.vip"
+  },
+  {
+    "customOrder": 11,
+    "enableJs": true,
+    "enabled": true,
+    "singleUrl": true,
+    "sourceGroup": "书源仓库",
+    "sourceIcon": "https://aka.doubaocdn.com/s/tXuq1wneQ4",
+    "sourceName": "Yiove 书源仓库",
+    "sourceUrl": "https://shuyuan.yiove.com",
+    "sourceComment": "Yiove 书源仓库，每日校验书源有效性，支持批量导入"
+  },
+  {
+    "customOrder": 12,
+    "enableJs": true,
+    "enabled": true,
+    "singleUrl": true,
+    "sourceGroup": "书源仓库",
+    "sourceIcon": "https://github.githubassets.com/favicons/favicon.svg",
+    "sourceName": "XIU2 书源",
+    "sourceUrl": "https://github.com/XIU2/Yuedu",
+    "sourceComment": "XIU2 维护的「阅读」APP 自用书源，每日更新。书源分享页 https://xiu2.github.io/yuedu/"
+  },
+  {
+    "customOrder": 13,
+    "enableJs": true,
+    "enabled": true,
+    "singleUrl": true,
+    "sourceGroup": "书源仓库",
+    "sourceIcon": "https://ycoo.net/static/image/common/logo_88_31.gif",
+    "sourceName": "源论坛",
+    "sourceUrl": "https://ycoo.net/portal.php?mod=rss",
+    "sourceComment": "源论坛 RSS feed，发布书源相关情报与讨论。论坛主页 https://ycoo.net"
   }
 ]

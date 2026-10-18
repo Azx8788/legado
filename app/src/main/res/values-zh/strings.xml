@@ -1599,4 +1599,12 @@ Cron 使用 5 个字段：**分 时 日 月 周**
     <string name="bottom_bar_skin_import">导入图集</string>
     <string name="bottom_bar_skin_invalid">无效的图集文件</string>
     <string name="bottom_bar_skin_delete_confirm">删除该图集?</string>
+    <string name="import_file_done">已导入 %1$d 个文件</string>
+    <string name="import_file_skipped">跳过 %1$d 个不支持的文件</string>
+    <string name="import_font_file">导入字体文件</string>
+    <string name="check_source_result_summary">共校验：%1$d 个\n可用：%2$d 个\n失效：%3$d 个\n\n注意：标记为失效的书源不一定不可用，可能因网络波动、超时或服务器临时问题导致校验失败，删除前请谨慎判断。</string>
+    <string name="delete_invalid_source">一键删除失效书源</string>
+    <string name="delete_invalid_source_confirm">将删除 %1$d 个分组含"失效"的书源。\n\n失效不等于不可使用，可能因网络抖动、超时等原因导致校验失败。确认要删除吗？</string>
+    <string name="delete_invalid_source_done">已删除 %1$d 个失效书源</string>
+    <string name="no_invalid_source">未发现失效书源</string>
 </resources>

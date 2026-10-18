@@ -57,6 +57,25 @@ class BookSourceViewModel(application: Application) : BaseViewModel(application)
         }
     }
 
+    /**
+     * 删除校验失败的书源（分组含"失效"或等于"校验超时"），返回被删除的书源数量
+     */
+    fun deleteInvalidSources(onDone: (Int) -> Unit) {
+        execute {
+            val invalid = appDb.bookSourceDao.all.filter {
+                it.getInvalidGroupNames().isNotBlank()
+            }
+            if (invalid.isEmpty()) {
+                0
+            } else {
+                SourceHelp.deleteBookSources(invalid)
+                invalid.size
+            }
+        }.onSuccess {
+            onDone(it)
+        }
+    }
+
     fun update(vararg bookSource: BookSource) {
         execute { appDb.bookSourceDao.update(*bookSource) }
     }

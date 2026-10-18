@@ -3,6 +3,7 @@ package io.legado.app.help
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.appInfo
 import io.legado.app.data.appDb
+import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.DictRule
 import io.legado.app.data.entities.HttpTTS
 import io.legado.app.data.entities.KeyboardAssist
@@ -90,6 +91,14 @@ object DefaultData {
         GSON.fromJsonArray<RssSource>(json).getOrDefault(emptyList())
     }
 
+    val bookSources: List<BookSource> by lazy {
+        val json = String(
+            appCtx.assets.open("defaultData${File.separator}bookSources.json")
+                .readBytes()
+        )
+        GSON.fromJsonArray<BookSource>(json).getOrDefault(emptyList())
+    }
+
     val coverRule: BookCover.CoverRule by lazy {
         val json = String(
             appCtx.assets.open("defaultData${File.separator}coverRule.json")
@@ -127,6 +136,10 @@ object DefaultData {
     fun importDefaultRssSources() {
         appDb.rssSourceDao.deleteDefault()
         appDb.rssSourceDao.insert(*rssSources.toTypedArray())
+    }
+
+    fun importDefaultBookSources() {
+        appDb.bookSourceDao.insert(*bookSources.toTypedArray())
     }
 
     fun importDefaultDictRules() {

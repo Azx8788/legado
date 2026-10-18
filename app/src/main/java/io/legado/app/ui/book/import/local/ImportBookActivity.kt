@@ -1,11 +1,13 @@
 package io.legado.app.ui.book.import.local
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import androidx.activity.addCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.widget.PopupMenu
 import androidx.core.net.toUri
@@ -59,6 +61,24 @@ class ImportBookActivity : BaseImportBookActivity<ImportBookViewModel>(),
         }
     }
 
+    /**
+     * 直接选择文件导入（txt/epub/压缩包等），无需先授权目录，
+     * 方便导入手机存储根目录、云盘等位置的文件
+     */
+    private val selectFiles =
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (uris.isNullOrEmpty()) return@registerForActivityResult
+            uris.forEach { uri ->
+                kotlin.runCatching {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+            }
+            viewModel.importFiles(uris.toList())
+        }
+
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         searchView.queryHint = getString(R.string.screen) + " • " + getString(R.string.local_book)
         onBackPressedDispatcher.addCallback(this) {
@@ -91,6 +111,7 @@ class ImportBookActivity : BaseImportBookActivity<ImportBookViewModel>(),
     override fun onCompatOptionsItemSelected(item: MenuItem): Boolean {
         when (item.itemId) {
             R.id.menu_select_folder -> selectFolder.launch()
+            R.id.menu_select_files -> selectFiles.launch(arrayOf("*/*"))
             R.id.menu_scan_folder -> scanFolder()
             R.id.menu_import_file_name -> alertImportFileName()
             R.id.menu_sort_name -> upSort(0)

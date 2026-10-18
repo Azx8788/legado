@@ -22,12 +22,11 @@ import kotlin.coroutines.coroutineContext
 @Suppress("unused")
 object AppUpdateGitHub : AppUpdate.AppUpdateInterface {
 
-    private val manifestUrls = listOf(
-        "https://skybook.qzz.io/legado-download/update.json"
-    )
+    // 本仓库为个人修改版，不依赖上游的更新清单服务器，直接查本仓库的 GitHub Releases
+    private val manifestUrls = emptyList<String>()
 
     private const val githubReleasesUrl =
-        "https://api.github.com/repos/skybbk1001/legadoT/releases?per_page=15"
+        "https://api.github.com/repos/Azx8788/legado/releases?per_page=15"
 
     private val checkVariant: AppVariant
         get() = when (AppConfig.updateToVariant) {

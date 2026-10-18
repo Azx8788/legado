@@ -1256,4 +1256,12 @@
     <string name="auto_check_new_backup_t">自动检查新备份</string>
     <string name="auto_check_new_backup_s">打开软件时检查是否有新备份，有新备份时提示是否更新</string>
     <string name="sys_image_picker">系统图片选择器</string>
+    <string name="import_file_done">已匯入 %1$d 個檔案</string>
+    <string name="import_file_skipped">略過 %1$d 個不支援的檔案</string>
+    <string name="import_font_file">匯入字型檔案</string>
+    <string name="check_source_result_summary">共校驗：%1$d 個\n可用：%2$d 個\n失效：%3$d 個\n\n注意：標記為失效的書源不一定不可用，可能因網路波動、逾時或伺服器臨時問題導致校驗失敗，刪除前請謹慎判斷。</string>
+    <string name="delete_invalid_source">一鍵刪除失效書源</string>
+    <string name="delete_invalid_source_confirm">將刪除 %1$d 個分組含「失效」的書源。\n\n失效不等於不可使用，可能因網路抖動、逾時等原因導致校驗失敗。確認要刪除嗎？</string>
+    <string name="delete_invalid_source_done">已刪除 %1$d 個失效書源</string>
+    <string name="no_invalid_source">未發現失效書源</string>
 </resources>

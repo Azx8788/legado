@@ -184,6 +184,13 @@ class App : Application() {
                 .enableLogger(BuildConfig.DEBUG || AppConfig.recordLog)
                 .setLogger(EventLogger())
             DefaultData.upVersion()
+            //首次启动导入内置书源
+            if (!getPrefBoolean("defaultBookSourceImported", false)) {
+                DefaultData.importDefaultBookSources()
+                defaultSharedPreferences.edit()
+                    .putBoolean("defaultBookSourceImported", true)
+                    .apply()
+            }
             AppFreezeMonitor.init(this@App)
             DispatchersMonitor.init()
             URL.setURLStreamHandlerFactory(ObsoleteUrlFactory(okHttpClient))

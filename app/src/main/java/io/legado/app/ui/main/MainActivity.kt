@@ -143,6 +143,8 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         lifecycleScope.launch {
             //隐私协议
             if (!privacyPolicy()) return@launch
+            //免责声明（仅首次启动弹一次）
+            showDisclaimer()
             scheduleShibbolethImport()
             //版本更新
             upVersion()
@@ -304,6 +306,28 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
                 block.resume(false)
             }
         }
+    }
+
+    /**
+     * 免责声明（仅首次启动弹一次）
+     */
+    private suspend fun showDisclaimer() = suspendCancellableCoroutine sc@{ block ->
+        if (LocalConfig.disclaimerAccepted) {
+            block.resume(null)
+            return@sc
+        }
+        LocalConfig.disclaimerAccepted = true
+        val disclaimer = String(assets.open("disclaimer.md").readBytes())
+        val dialog = TextDialog(
+            getString(R.string.disclaimer),
+            disclaimer,
+            TextDialog.Mode.MD,
+            time = 5000
+        )
+        dialog.setOnDismissListener {
+            block.resume(null)
+        }
+        showDialogFragment(dialog)
     }
 
     /**

@@ -1,6 +1,7 @@
 package io.legado.app.ui.book.import.local
 
 import android.app.Application
+import android.net.Uri
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern.archiveFileRegex
@@ -103,6 +104,47 @@ class ImportBookViewModel(application: Application) : BaseViewModel(application)
             context.toastOnUi("添加书架成功")
         }.onFinally {
             finally.invoke()
+        }
+    }
+
+    /**
+     * 批量导入系统文件选择器选中的文件（自动过滤不支持的扩展名）
+     */
+    fun importFiles(uris: List<Uri>) {
+        execute {
+            val supported = arrayListOf<Uri>()
+            var skipped = 0
+            uris.forEach { uri ->
+                val name = kotlin.runCatching { FileDoc.fromUri(uri, false).name }.getOrNull()
+                if (name != null &&
+                    (name.matches(bookFileRegex) || name.matches(archiveFileRegex))
+                ) {
+                    supported.add(uri)
+                } else {
+                    skipped += 1
+                }
+            }
+            var success = 0
+            supported.forEach { uri ->
+                kotlin.runCatching {
+                    LocalBook.importFiles(uri)
+                }.onSuccess {
+                    success += it.size
+                }.onFailure {
+                    AppLog.put("导入文件失败\n${it.localizedMessage}", it)
+                }
+            }
+            Pair(success, skipped)
+        }.onSuccess { (success, skipped) ->
+            if (success > 0) {
+                context.toastOnUi(context.getString(R.string.import_file_done, success))
+            }
+            if (skipped > 0) {
+                context.toastOnUi(context.getString(R.string.import_file_skipped, skipped))
+            }
+        }.onError {
+            AppLog.put("导入文件出错\n${it.localizedMessage}", it)
+            context.toastOnUi(it.localizedMessage)
         }
     }
 

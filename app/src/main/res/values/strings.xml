@@ -1684,4 +1684,12 @@ Placeholders:
     <string name="bottom_bar_skin_import">Import Skin</string>
     <string name="bottom_bar_skin_invalid">Invalid skin file</string>
     <string name="bottom_bar_skin_delete_confirm">Delete this skin?</string>
+    <string name="import_file_done">Imported %1$d file(s)</string>
+    <string name="import_file_skipped">Skipped %1$d unsupported file(s)</string>
+    <string name="import_font_file">Import font file(s)</string>
+    <string name="check_source_result_summary">Checked: %1$d\nAvailable: %2$d\nInvalid: %3$d\n\nNote: sources marked invalid may still work — failures can be caused by network issues or timeouts. Be careful before deleting.</string>
+    <string name="delete_invalid_source">Delete invalid sources</string>
+    <string name="delete_invalid_source_confirm">Delete %1$d source(s) whose group contains \"invalid\"?\n\nInvalid does not mean unusable — failures may be caused by network issues or timeouts. Are you sure?</string>
+    <string name="delete_invalid_source_done">Deleted %1$d invalid source(s)</string>
+    <string name="no_invalid_source">No invalid sources found</string>
 </resources>
